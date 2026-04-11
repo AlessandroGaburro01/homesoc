@@ -215,7 +215,13 @@
 | Spoofing (ESP_EF1867) | Device non identificato — natura e legittimità sconosciuta | 2 | 2 | **MEDIO** |
 | Information Disclosure (ESP_EF1867) | Firmware ignoto trasmette dati in chiaro o verso C2 | 2 | 2 | **MEDIO** |
 
-**Controlli previsti:** Shelly — nessun cloud, auth UI web abilitata, firmware aggiornato. ESP — identificazione fisica tramite MAC OUI urgente.
+**Controlli previsti:** Shelly — nessun cloud, auth UI web abilitata, firmware aggiornato. ESP — identificazione fisica urgente.
+
+**Metodologia identificazione ESP_EF1867:**
+1. MAC OUI lookup su macvendors.com → identificare produttore chipset
+2. Ispezione fisica — localizzare il device seguendo il MAC address sulla rete
+3. Traffic capture con tcpdump/Wireshark — analizzare destinazioni, protocolli, frequenza
+4. Se non identificato → quarantena (blocco MAC sul Deco) fino a verifica
 
 ### 2.8 POS e Cassa Negozio (NEG-01, NEG-02)
 
@@ -380,13 +386,16 @@ La triade **CIA** (Confidentiality · Integrity · Availability) è declinata pe
 
 ### TODO — prossimi aggiornamenti
 
-- [ ] Abilitare 2FA su account WD My Cloud Home (R-06)
-- [ ] Identificare ESP_EF1867 tramite MAC OUI lookup su macvendors.com (R-11)
-- [ ] Completare colonne IP/MAC con DHCP lease table Deco
-- [ ] Identificare device host modulo Wisol (AUTO-03)
-- [ ] Verificare Android negozio (NEG-03) fisicamente
-- [ ] Aggiornare stato rischi a ogni nuova fase di deployment
-- [ ] Committare su Git: `git add docs/01-threat-model.md && git commit -m "docs(threat-model): add CIA objectives, update NAS/Deco/Nest — v1.1"`
+| # | Azione | Rischio | Priorità | Stato |
+|---|---|---|---|---|
+| 1 | Abilitare 2FA su account WD My Cloud Home | R-06 | Alta | Da completare |
+| 2 | Identificare ESP_EF1867 tramite MAC OUI lookup + ispezione fisica | R-11 | Alta | Da completare |
+| 3 | Completare colonne IP/MAC con DHCP lease table Deco | Tutti | Media | Da completare |
+| 4 | Identificare device host modulo Wisol (AUTO-03) | R-11 | Media | Da completare |
+| 5 | Verificare Android negozio (NEG-03) fisicamente | — | Media | Da completare |
+| 6 | Aggiornare stato rischi a ogni nuova fase di deployment | Tutti | Ongoing | — |
+
+**Commit:** `git add docs/01-threat-model.md && git commit -m "docs(threat-model): update vX.Y — <motivo>"`
 
 ---
 

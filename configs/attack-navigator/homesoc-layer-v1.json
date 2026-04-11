@@ -1,0 +1,499 @@
+{
+  "name": "HomeSOC — Detection Coverage v1.0",
+  "versions": {
+    "attack": "14",
+    "navigator": "4.9",
+    "layer": "4.5"
+  },
+  "domain": "enterprise-attack",
+  "description": "HomeSOC · Domestic Security Operations Centre — Copertura detection MITRE ATT&CK per fase di deployment. Autore: Alessandro · LM Sicurezza Informatica · UniMI · Aprile 2026",
+  "filters": {
+    "platforms": [
+      "macOS",
+      "Linux",
+      "Network",
+      "IaaS"
+    ]
+  },
+  "sorting": 0,
+  "layout": {
+    "layout": "side",
+    "aggregateFunction": "average",
+    "showID": true,
+    "showName": true,
+    "showAggregateScores": false,
+    "countUnscored": false,
+    "expandedSubtechniques": "annotated"
+  },
+  "hideDisabled": false,
+  "techniques": [
+
+    {
+      "techniqueID": "T1110",
+      "tactic": "credential-access",
+      "score": 75,
+      "color": "",
+      "comment": "UC-01 — Brute Force SSH su SOC-01. Wazuh rule 5720 + custom rule 100001: ≥5 tentativi SSH falliti in 60s → alert L10 → fail2ban automatico. Fase 3.",
+      "enabled": true,
+      "metadata": [
+        {"name": "Use Case", "value": "UC-01"},
+        {"name": "Fase", "value": "3"},
+        {"name": "Strumento", "value": "Wazuh"},
+        {"name": "Risposta", "value": "fail2ban auto-block"},
+        {"name": "Asset", "value": "SOC-01 (R-10)"}
+      ],
+      "links": [],
+      "showSubtechniques": true
+    },
+    {
+      "techniqueID": "T1110.001",
+      "tactic": "credential-access",
+      "score": 90,
+      "color": "#5bc45b",
+      "comment": "UC-01 — Brute Force: Password Guessing su SSH. Regola Wazuh custom 100001. Frequenza ≥5 in 60s dallo stesso IP → alert → fail2ban. Completamente implementabile in Fase 3.",
+      "enabled": true,
+      "metadata": [
+        {"name": "Use Case", "value": "UC-01"},
+        {"name": "Regola Wazuh", "value": "100001 (custom) + 5720 (builtin)"},
+        {"name": "Trigger", "value": "≥5 tentativi in 60s stesso IP"},
+        {"name": "Fase", "value": "3"},
+        {"name": "Stato", "value": "Da implementare"},
+        {"name": "Asset", "value": "SOC-01 R-10"}
+      ],
+      "links": [],
+      "showSubtechniques": false
+    },
+    {
+      "techniqueID": "T1110.003",
+      "tactic": "credential-access",
+      "score": 50,
+      "color": "#f5b942",
+      "comment": "Password Spraying — parzialmente coperto da Wazuh via monitoraggio log auth.log. Detection meno granulare rispetto a T1110.001.",
+      "enabled": true,
+      "metadata": [
+        {"name": "Copertura", "value": "Parziale"},
+        {"name": "Strumento", "value": "Wazuh builtin rules"},
+        {"name": "Fase", "value": "3"}
+      ],
+      "links": [],
+      "showSubtechniques": false
+    },
+
+    {
+      "techniqueID": "T1071",
+      "tactic": "command-and-control",
+      "score": 70,
+      "color": "",
+      "comment": "UC-02 — Beaconing IoT verso cloud cinesi (Dreame/Narwal). NextDNS blocco IoC + Wazuh alert su query anomale.",
+      "enabled": true,
+      "metadata": [
+        {"name": "Use Case", "value": "UC-02"},
+        {"name": "Asset", "value": "IOT-01 IOT-02 (R-01)"},
+        {"name": "Fase", "value": "3"}
+      ],
+      "links": [],
+      "showSubtechniques": true
+    },
+    {
+      "techniqueID": "T1071.001",
+      "tactic": "command-and-control",
+      "score": 80,
+      "color": "#5bc45b",
+      "comment": "UC-02 — C2 via Web Protocols. IoT beaconing rilevato tramite NextDNS query log + analisi frequenza/volume. IP destinazione in ASN cinesi (Baidu AS23724, Alibaba AS45102). Trigger: >20 query/min da singolo host verso domini non in whitelist vendor.",
+      "enabled": true,
+      "metadata": [
+        {"name": "Use Case", "value": "UC-02"},
+        {"name": "Strumento", "value": "NextDNS + Wazuh"},
+        {"name": "Indicatori", "value": "15kbps down / 6kbps up costanti"},
+        {"name": "ASN target", "value": "AS23724 (Baidu) · AS45102 (Alibaba)"},
+        {"name": "Fase", "value": "3"},
+        {"name": "Asset", "value": "IOT-01 IOT-02 R-01"}
+      ],
+      "links": [],
+      "showSubtechniques": false
+    },
+    {
+      "techniqueID": "T1071.004",
+      "tactic": "command-and-control",
+      "score": 60,
+      "color": "#f5b942",
+      "comment": "DNS C2 — parzialmente coperto da NextDNS con monitoraggio query verso domini sospetti. DNSSEC abilitato.",
+      "enabled": true,
+      "metadata": [
+        {"name": "Strumento", "value": "NextDNS DoH + DNSSEC"},
+        {"name": "Copertura", "value": "Parziale"},
+        {"name": "Fase", "value": "1"}
+      ],
+      "links": [],
+      "showSubtechniques": false
+    },
+
+    {
+      "techniqueID": "T1565",
+      "tactic": "impact",
+      "score": 75,
+      "color": "",
+      "comment": "UC-03 — File Integrity Monitoring su MacBook Pro M1. Wazuh FIM su home dir, /etc, LaunchAgents, LaunchDaemons, ~/.ssh.",
+      "enabled": true,
+      "metadata": [
+        {"name": "Use Case", "value": "UC-03"},
+        {"name": "Asset", "value": "END-05 (R-02 R-08)"},
+        {"name": "Fase", "value": "3"}
+      ],
+      "links": [],
+      "showSubtechniques": true
+    },
+    {
+      "techniqueID": "T1565.001",
+      "tactic": "impact",
+      "score": 85,
+      "color": "#5bc45b",
+      "comment": "UC-03 — Stored Data Manipulation. Wazuh FIM su macOS: /Users/alessandro, /etc, /Library/LaunchAgents, /Library/LaunchDaemons, ~/.ssh. Regole 550/553/554 builtin + custom per LaunchAgents. Realtime check abilitato.",
+      "enabled": true,
+      "metadata": [
+        {"name": "Use Case", "value": "UC-03"},
+        {"name": "Percorsi FIM", "value": "/Users/alessandro · /etc · /Library/LaunchAgents"},
+        {"name": "Regole Wazuh", "value": "550 553 554 (builtin) + custom LaunchAgents"},
+        {"name": "Modalità", "value": "realtime"},
+        {"name": "Fase", "value": "3"},
+        {"name": "Asset", "value": "END-05 R-02 R-08"}
+      ],
+      "links": [],
+      "showSubtechniques": false
+    },
+
+    {
+      "techniqueID": "T1078",
+      "tactic": "initial-access",
+      "score": 75,
+      "color": "",
+      "comment": "UC-04 — Valid Accounts. Accesso non autorizzato a NAS WD My Cloud Home tramite account WD compromesso o SMB da host inatteso.",
+      "enabled": true,
+      "metadata": [
+        {"name": "Use Case", "value": "UC-04"},
+        {"name": "Asset", "value": "NAS-01 (R-06)"},
+        {"name": "Fase", "value": "3"}
+      ],
+      "links": [],
+      "showSubtechniques": true
+    },
+    {
+      "techniqueID": "T1078.004",
+      "tactic": "initial-access",
+      "score": 75,
+      "color": "#5bc45b",
+      "comment": "UC-04 — Cloud Accounts. Account WD My Cloud Home compromesso → accesso remoto ai file. Controllo: 2FA obbligatorio, monitoraggio connessioni SMB da IP non in whitelist (porta 445/tcp verso NAS-01 da host non approvati).",
+      "enabled": true,
+      "metadata": [
+        {"name": "Use Case", "value": "UC-04"},
+        {"name": "Controllo immediato", "value": "2FA account WD — azione pre-deploy"},
+        {"name": "Whitelist SMB", "value": "Solo END-05 · END-01"},
+        {"name": "Porta monitorata", "value": "445/tcp verso 192.168.71.20"},
+        {"name": "Fase", "value": "3"},
+        {"name": "Asset", "value": "NAS-01 R-06"}
+      ],
+      "links": [],
+      "showSubtechniques": false
+    },
+    {
+      "techniqueID": "T1078.001",
+      "tactic": "persistence",
+      "score": 50,
+      "color": "#f5b942",
+      "comment": "Default Accounts — parzialmente coperto. Verificare che dispositivi IoT non abbiano credenziali di default (Shelly, telecamere).",
+      "enabled": true,
+      "metadata": [
+        {"name": "Copertura", "value": "Parziale — controllo manuale"},
+        {"name": "Azione", "value": "Cambio credenziali default su tutti gli IoT"}
+      ],
+      "links": [],
+      "showSubtechniques": false
+    },
+
+    {
+      "techniqueID": "T1190",
+      "tactic": "initial-access",
+      "score": 80,
+      "color": "#5bc45b",
+      "comment": "UC-05 — Exploit Public-Facing Application. Greenbone/OpenVAS scan settimanale su POS e Cassa negozio. Alert automatico se CVSS ≥ 7.0. Playbook risposta: patch entro 72h o workaround documentato.",
+      "enabled": true,
+      "metadata": [
+        {"name": "Use Case", "value": "UC-05"},
+        {"name": "Strumento", "value": "Greenbone/OpenVAS (ct-102)"},
+        {"name": "Schedule", "value": "Domenica 02:00 — subnet negozio"},
+        {"name": "Trigger", "value": "CVSS ≥ 7.0 su NEG-01 o NEG-02"},
+        {"name": "SLA risposta", "value": "Patch entro 72h"},
+        {"name": "Fase", "value": "2"},
+        {"name": "Asset", "value": "NEG-01 NEG-02 R-03 R-04"}
+      ],
+      "links": [],
+      "showSubtechniques": false
+    },
+
+    {
+      "techniqueID": "T1200",
+      "tactic": "initial-access",
+      "score": 65,
+      "color": "#f5b942",
+      "comment": "UC-06 — Hardware Additions. Rilevamento device non autorizzati in rete (es. ESP_EF1867). Polling DHCP lease table Deco + confronto con asset inventory. Alert se nuovo MAC non in whitelist.",
+      "enabled": true,
+      "metadata": [
+        {"name": "Use Case", "value": "UC-06"},
+        {"name": "Metodo", "value": "Polling DHCP lease table + whitelist MAC"},
+        {"name": "Asset noto", "value": "ESP_EF1867 (R-11) — da identificare fisicamente"},
+        {"name": "Risposta", "value": "Blocco MAC su Deco se non riconosciuto"},
+        {"name": "Fase", "value": "3"}
+      ],
+      "links": [],
+      "showSubtechniques": false
+    },
+
+    {
+      "techniqueID": "T1046",
+      "tactic": "discovery",
+      "score": 85,
+      "color": "#5bc45b",
+      "comment": "Network Service Discovery — Greenbone scan attivo su tutti i segmenti. Rileva porte aperte, servizi esposti, versioni software vulnerabili. Coperto sia in Fase 2 (scan base) che Fase 6 (Infection Monkey).",
+      "enabled": true,
+      "metadata": [
+        {"name": "Strumento", "value": "Greenbone/OpenVAS (Fase 2) · Infection Monkey (Fase 6)"},
+        {"name": "Tipo", "value": "Proattivo — scan periodico schedulato"},
+        {"name": "Fase", "value": "2 + 6"}
+      ],
+      "links": [],
+      "showSubtechniques": false
+    },
+
+    {
+      "techniqueID": "T1083",
+      "tactic": "discovery",
+      "score": 70,
+      "color": "#5bc45b",
+      "comment": "File and Directory Discovery — coperto da Wazuh FIM. Qualsiasi processo che esegue accesso anomalo ai percorsi monitorati viene rilevato e loggato.",
+      "enabled": true,
+      "metadata": [
+        {"name": "Strumento", "value": "Wazuh FIM — realtime"},
+        {"name": "Percorsi", "value": "/Users/alessandro · /etc · LaunchAgents"},
+        {"name": "Fase", "value": "3"}
+      ],
+      "links": [],
+      "showSubtechniques": false
+    },
+
+    {
+      "techniqueID": "T1059",
+      "tactic": "execution",
+      "score": 40,
+      "color": "#f5b942",
+      "comment": "Command and Scripting Interpreter — parzialmente coperto da Wazuh syslog e process monitoring su macOS. Coverage completa disponibile con Wazuh auditd rules in Fase 3+.",
+      "enabled": true,
+      "metadata": [
+        {"name": "Copertura", "value": "Parziale"},
+        {"name": "Strumento", "value": "Wazuh process monitoring"},
+        {"name": "Fase", "value": "3"}
+      ],
+      "links": [],
+      "showSubtechniques": false
+    },
+
+    {
+      "techniqueID": "T1547",
+      "tactic": "persistence",
+      "score": 60,
+      "color": "#f5b942",
+      "comment": "Boot or Logon Autostart Execution — parzialmente coperto da Wazuh FIM su /Library/LaunchAgents e /Library/LaunchDaemons su macOS (UC-03).",
+      "enabled": true,
+      "metadata": [
+        {"name": "Copertura", "value": "Parziale (macOS)"},
+        {"name": "Strumento", "value": "Wazuh FIM su LaunchAgents"},
+        {"name": "Fase", "value": "3"}
+      ],
+      "links": [],
+      "showSubtechniques": true
+    },
+    {
+      "techniqueID": "T1547.011",
+      "tactic": "persistence",
+      "score": 75,
+      "color": "#5bc45b",
+      "comment": "Plist Modification (macOS) — Wazuh FIM su /Library/LaunchAgents e /Library/LaunchDaemons rileva modifiche a plist files. Regola custom Wazuh per alert su nuovi file .plist.",
+      "enabled": true,
+      "metadata": [
+        {"name": "Strumento", "value": "Wazuh FIM"},
+        {"name": "Percorso", "value": "/Library/LaunchAgents · /Library/LaunchDaemons"},
+        {"name": "Fase", "value": "3"}
+      ],
+      "links": [],
+      "showSubtechniques": false
+    },
+
+    {
+      "techniqueID": "T1486",
+      "tactic": "impact",
+      "score": 50,
+      "color": "#f5b942",
+      "comment": "Data Encrypted for Impact (Ransomware) — parzialmente coperto da Wazuh FIM su NAS (monitora accessi SMB anomali). Protezione piena richiede backup offline e snapshot automatici.",
+      "enabled": true,
+      "metadata": [
+        {"name": "Asset", "value": "NAS-01 (R-06) · Endpoint (R-02)"},
+        {"name": "Copertura", "value": "Parziale — FIM + monitoraggio SMB"},
+        {"name": "Fase", "value": "3"}
+      ],
+      "links": [],
+      "showSubtechniques": false
+    },
+
+    {
+      "techniqueID": "T1498",
+      "tactic": "impact",
+      "score": 40,
+      "color": "#f5b942",
+      "comment": "Network Denial of Service — parzialmente coperto. Uptime Kuma monitora availability POS e servizi critici. Alert immediato se host offline.",
+      "enabled": true,
+      "metadata": [
+        {"name": "Strumento", "value": "Uptime Kuma (ct-101)"},
+        {"name": "Asset", "value": "NEG-01 NEG-02 (R-04)"},
+        {"name": "Copertura", "value": "Availability — no prevenzione attiva"},
+        {"name": "Fase", "value": "2"}
+      ],
+      "links": [],
+      "showSubtechniques": false
+    },
+
+    {
+      "techniqueID": "T1040",
+      "tactic": "credential-access",
+      "score": 30,
+      "color": "#e8735a",
+      "comment": "Network Sniffing — coverage limitata. Dipende da VLAN (non disponibile ora). Mitigato parzialmente da NextDNS DoH (impedisce sniff DNS in chiaro). Coverage piena possibile solo con OPNsense (Fase FUTURO).",
+      "enabled": true,
+      "metadata": [
+        {"name": "Copertura", "value": "Bassa — no VLAN attuale"},
+        {"name": "Mitigazione parziale", "value": "NextDNS DoH"},
+        {"name": "Coverage piena", "value": "OPNsense Fase FUTURO"},
+        {"name": "Fase", "value": "FUTURO"}
+      ],
+      "links": [],
+      "showSubtechniques": false
+    },
+
+    {
+      "techniqueID": "T1557",
+      "tactic": "credential-access",
+      "score": 20,
+      "color": "#e8735a",
+      "comment": "Adversary-in-the-Middle — coverage molto bassa. DNSSEC+DoH mitiga DNS hijacking. VLAN e OPNsense necessari per coverage completa.",
+      "enabled": true,
+      "metadata": [
+        {"name": "Copertura", "value": "Molto bassa"},
+        {"name": "Mitigazione DNS", "value": "NextDNS DoH + DNSSEC"},
+        {"name": "Fase", "value": "FUTURO (OPNsense)"}
+      ],
+      "links": [],
+      "showSubtechniques": false
+    },
+
+    {
+      "techniqueID": "T1566",
+      "tactic": "initial-access",
+      "score": 20,
+      "color": "#e8735a",
+      "comment": "Phishing — coverage bassa nel perimetro HomeSOC. Fuori scope: nessun email gateway self-hosted, focus su detection network-level e endpoint-level. Mitigazione principale delegata a email provider (Gmail/iCloud filtri antispam). Futura integrazione Wazuh + email gateway possibile ma non prioritaria.",
+      "enabled": true,
+      "metadata": [
+        {"name": "Copertura", "value": "Bassa — fuori scope attuale"},
+        {"name": "Mitigazione", "value": "Email provider filtri"},
+        {"name": "Fase", "value": "Non pianificato"}
+      ],
+      "links": [],
+      "showSubtechniques": false
+    },
+
+    {
+      "techniqueID": "T1053",
+      "tactic": "persistence",
+      "score": 55,
+      "color": "#f5b942",
+      "comment": "Scheduled Task/Job — parzialmente coperto da Wazuh FIM e syslog. Detection di cron job sospetti richiede audit rules dedicate (Fase 3+).",
+      "enabled": true,
+      "metadata": [
+        {"name": "Copertura", "value": "Parziale"},
+        {"name": "Strumento", "value": "Wazuh syslog + FIM"},
+        {"name": "Fase", "value": "3"}
+      ],
+      "links": [],
+      "showSubtechniques": false
+    },
+
+    {
+      "techniqueID": "T1588",
+      "tactic": "resource-development",
+      "score": 70,
+      "color": "#5bc45b",
+      "comment": "Obtain Capabilities — coperto da OpenCTI + feed STIX/TAXII (OTX, Abuse.ch). Correlazione IoC con alert Wazuh in Fase 5.",
+      "enabled": true,
+      "metadata": [
+        {"name": "Strumento", "value": "OpenCTI (vm-105) + feed STIX/TAXII"},
+        {"name": "Feed", "value": "OTX · Abuse.ch · MITRE ATT&CK"},
+        {"name": "Fase", "value": "5"}
+      ],
+      "links": [],
+      "showSubtechniques": false
+    },
+
+    {
+      "techniqueID": "T1595",
+      "tactic": "reconnaissance",
+      "score": 60,
+      "color": "#f5b942",
+      "comment": "Active Scanning — rilevabile tramite Wazuh (tentativi di port scan sulla rete). Tutte le porte su internet risultano chiuse (verificato 10/04/2026).",
+      "enabled": true,
+      "metadata": [
+        {"name": "Verifica", "value": "Porte internet chiuse — 10/04/2026"},
+        {"name": "Strumento", "value": "Wazuh network monitoring"},
+        {"name": "Fase", "value": "3"}
+      ],
+      "links": [],
+      "showSubtechniques": false
+    }
+
+  ],
+  "gradient": {
+    "colors": [
+      "#e8735a",
+      "#f5b942",
+      "#5bc45b"
+    ],
+    "minValue": 0,
+    "maxValue": 100
+  },
+  "legendItems": [
+    {
+      "label": "Coverage alta (≥75) — Use case implementato",
+      "color": "#5bc45b"
+    },
+    {
+      "label": "Coverage parziale (40-74) — Monitoraggio indiretto",
+      "color": "#f5b942"
+    },
+    {
+      "label": "Coverage bassa (<40) — Gap / Fase FUTURO",
+      "color": "#e8735a"
+    }
+  ],
+  "metadata": [
+    {"name": "Progetto", "value": "HomeSOC — Domestic Security Operations Centre"},
+    {"name": "Autore", "value": "Alessandro · LM Sicurezza Informatica · UniMI"},
+    {"name": "Versione", "value": "1.0 — Aprile 2026"},
+    {"name": "Fonte", "value": "docs/02-architecture.md · docs/01-threat-model.md"},
+    {"name": "Hardware", "value": "GMKtec M5 Ultra · Ryzen 7 7730U · 32GB DDR4"},
+    {"name": "Stack", "value": "Wazuh · Greenbone · TheHive · OpenCTI · Caldera"},
+    {"name": "Repo", "value": "configs/attack-navigator/homesoc-layer-v1.json"}
+  ],
+  "links": [],
+  "showTacticRowBackground": true,
+  "tacticRowBackground": "#dddddd",
+  "selectTechniquesAcrossTactics": true,
+  "selectSubtechniquesWithParent": false,
+  "selectVisibleTechniques": false
+}
