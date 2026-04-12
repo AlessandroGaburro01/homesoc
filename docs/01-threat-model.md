@@ -1,6 +1,6 @@
 # 01 — Threat Model
 **Progetto:** HomeSOC · Domestic Security Operations Centre
-**Versione:** 1.1 — Aprile 2026
+**Versione:** 1.2 — Aprile 2026
 **Autore:** Alessandro · LM Sicurezza Informatica · UniMI
 **Framework:** STRIDE (Spoofing, Tampering, Repudiation, Information Disclosure, Denial of Service, Elevation of Privilege)
 
@@ -10,6 +10,7 @@
 **Changelog:**
 - v1.0 — Aprile 2026 — Prima stesura
 - v1.1 — Aprile 2026 — Correzione modelli Deco (XE75/XE75 Pro), termostati → Google Nest Learning 3a gen, NAS → WD My Cloud Home, aggiornamento R-06, aggiunta sezione CIA
+- v1.2 — Aprile 2026 — Correzione subnet (192.168.68.0/24), IP/MAC da scan CSV, identificazione ESP_EF1867 (luce smart sala), PAX Computer come hardware POS, Narwal FN-LINK, due Roborock distinti, aggiornamento stati risk register (R-06, R-11, R-15, R-16, R-17), NEG-03 identificato come POS mobile, note DoH Deco BE65
 
 ---
 
@@ -25,8 +26,9 @@
 
 ## 1. Asset Inventory
 
-**Fonte:** Deco App (10/04/2026 22:22) + dashboard WD My Cloud Home + Project Charter v1
-**Subnet:** 192.168.71.0/24
+**Fonte:** Deco App (10/04/2026 22:22) + scan ARP/nmap CSV (11/04/2026) + dashboard WD My Cloud Home + Project Charter v1
+**Subnet:** 192.168.68.0/24
+**DHCP range:** 192.168.68.51+ (le prime 50 sono riservate dal Deco per uso interno/statico)
 
 ### Note architetturali
 
@@ -36,14 +38,15 @@
 - Il Nighthawk S8000 opera come switch unmanaged — nessuna subnet shadow, nessuna VLAN.
 - Il Zyxel Windinfostrada opera come modem puro. Il Deco BE65 è il gateway NAT effettivo. Dall'esterno tutte le porte risultano chiuse (verificato 10/04/2026).
 - Isolamento reale con VLAN possibile solo con OPNsense (pianificato per casa nuova — Fase FUTURO).
+- **DoH non supportato a livello router dal Deco BE65** — aggiornamento firmware con supporto DoH in beta testing al momento della stesura. DoH attivo solo su device con profilo NextDNS configurato direttamente (es. MacBook). Impatta R-17.
 
 ### 1.1 Infrastruttura di Rete
 
 | ID | Hostname | Tipo | IP | Connessione | Firmware | Note |
 |---|---|---|---|---|---|---|
-| INF-01 | Deco BE65 — Salotto | Mesh Gateway (master) | 192.168.71.1 | — | 1.2.0 B20250718 | Nodo principale, NAT gateway |
-| INF-02 | Deco XE75 Pro — Camera Nicole | Mesh Node | 192.168.71.250 | Ethernet backhaul | 1.3.1 B20251023 | — |
-| INF-03 | Deco XE75 — Cucina | Mesh Node | 192.168.71.247 | Wireless backhaul | 1.3.1 B20251023 | — |
+| INF-01 | Deco BE65 — Salotto | Mesh Gateway (master) | 192.168.68.1 | — | 1.2.0 B20250718 | Nodo principale, NAT gateway |
+| INF-02 | Deco XE75 Pro — Camera Nicole | Mesh Node | 192.168.68.250 | Ethernet backhaul | 1.3.1 B20251023 | — |
+| INF-03 | Deco XE75 — Cucina | Mesh Node | 192.168.68.247 | Wireless backhaul | 1.3.1 B20251023 | — |
 | INF-04 | Deco XE75 Pro — Camera Ale | Mesh Node | TBD | TBD | 1.3.1 B20251023 | — |
 | INF-05 | Deco XE75 Pro — Negozio | Mesh Node | TBD | TBD | 1.3.1 B20251023 | Sede Sesto San Giovanni |
 | INF-06 | Nighthawk S8000 | Switch unmanaged | N/A | Ethernet | TBD | Nessuna funzione di routing, nessuna VLAN |
@@ -51,40 +54,41 @@
 
 ### 1.2 Endpoint Utente
 
-| ID | Hostname | Tipo | IP | OS | Note |
-|---|---|---|---|---|---|
-| END-01 | Ipaddialessandro | iPad Alessandro | DHCP | iPadOS | Dispositivo principale utente |
-| END-02 | iPhone ale | iPhone Alessandro | DHCP | iOS | — |
-| END-03 | iPhone | iPhone (utente TBD) | DHCP | iOS | Verificare proprietario |
-| END-04 | iPad-di-Nicole-2 | iPad Nicole | DHCP | iPadOS | — |
-| END-05 | MacBook Pro M1 Pro | Laptop principale | TBD → statico | macOS | **Asset critico. Target prioritario Wazuh agent + FIM.** |
-| END-06 | Air-di-Nicole | Laptop/PC Nicole | DHCP | TBD | Modello da confermare |
+| ID | Hostname | Tipo | IP | MAC | OS | Note |
+|---|---|---|---|---|---|---|
+| END-01 | Ipaddialessandro | iPad Alessandro | DHCP | — | iPadOS | Dispositivo principale utente |
+| END-02 | Iphone-di-alessandro.local | iPhone Alessandro | 192.168.68.79 | F6:C9:51:DC:F9:58 | iOS | — |
+| END-03 | iPhone (utente TBD) | iPhone | DHCP | — | iOS | Verificare proprietario |
+| END-04 | iPad-di-Nicole-2 | iPad Nicole | DHCP | — | iPadOS | — |
+| END-05 | MacBookPro-di-Alessandro-Gaburro.local | MacBook Pro M1 Pro | 192.168.68.108 → **reservation .108** | C6:A3:2A:A3:A8:0F | macOS | **Asset critico. Target prioritario Wazuh agent + FIM.** MAC randomizzato — verificare se fisso o rotante. |
+| END-06 | MacBook-Air-di-Nicole.local | MacBook Air Nicole | 192.168.68.75 | 38:F9:D3:BF:FE:65 | macOS | Modello da confermare (Apple MAC confermato) |
 
 ### 1.3 NAS / Storage
 
-| ID | Hostname | Tipo | IP | Note |
-|---|---|---|---|---|
-| NAS-01 | MyCloud-2J1F4P | WD My Cloud Home | DHCP → statico | Cloud-first by design: connessione ai server WD non disabilitabile. Accesso remoto dipende interamente dalla sicurezza dell'account WD. 2FA da abilitare. |
+| ID | Hostname | Tipo | IP | MAC | Note |
+|---|---|---|---|---|---|
+| NAS-01 | MyCloud-2J1F4P.local | WD My Cloud Home | 192.168.68.90 → **reservation .90** | 00:00:C0:44:A4:97 | Cloud-first by design: connessione ai server WD non disabilitabile. **2FA account WD abilitato ✅ (11/04/2026).** Porta 80 aperta (web UI LAN). |
 
 ### 1.4 IoT — Robot Vacuum
 
-| ID | Hostname | Tipo | IP | Note |
-|---|---|---|---|---|
-| IOT-01 | robot dreame | Dreame Robot Vacuum | DHCP | ⚠️ Beaconing attivo (15↓ / 6↑ kbps). Traffico cloud cinese. |
-| IOT-02 | robot narwal | Narwal Robot | DHCP | Stesso profilo rischio Dreame. Traffico cloud cinese. |
-| IOT-03 | roborock-vacuum-a15 | Roborock A15 | DHCP | Presente nel negozio. |
+| ID | Hostname | Tipo | IP | MAC | Note |
+|---|---|---|---|---|---|
+| IOT-01 | robot dreame | Dreame Robot Vacuum | 192.168.68.53 | 70:C9:32:2F:90:05 | ⚠️ Beaconing attivo (15↓ / 6↑ kbps). Traffico cloud cinese. |
+| IOT-02 | NARWAL_f90d1d.local | Narwal Robot | 192.168.68.70 | 80:9D:65:2C:D8:13 (FN-LINK) | Stesso profilo rischio Dreame. Traffico cloud cinese. FN-LINK = modulo Wi-Fi interno Narwal. |
+| IOT-03a | — | Roborock A15 (casa) | 192.168.68.77 | B0:4A:39:1B:84:CD (Beijing Roborock) | Casa. |
+| IOT-03b | — | Roborock (negozio) | 192.168.68.101 | B0:4A:39:0A:61:37 (Beijing Roborock) | Negozio Sesto San Giovanni. |
 
 ### 1.5 IoT — Telecamere
 
-| ID | Hostname | Tipo | IP | Note |
-|---|---|---|---|---|
-| CAM-01 | Tapo camera ale | TP-Link Tapo | DHCP | Cloud TP-Link |
-| CAM-02 | videocamera primo piano | IP Cam (TBD) | DHCP | Da identificare. Nodo Camera Ale. |
-| CAM-03 | telecamera cortile | IP Cam (TBD) | DHCP | Nodo Cucina. |
-| CAM-04 | VMC2030-A054C | Netgear Arlo | DHCP | Cloud Arlo. Nodo Camera Nicole. |
-| CAM-05 | telecamera negozio | IP Cam (TBD) | DHCP | Negozio. |
-| CAM-06 | sistema sorveglianza negozio | NVR locale | TBD | Ethernet. Storage locale. Negozio. |
-| CAM-07 | google nest hub camera matrimoniale | Google Nest Hub | DHCP | Cloud Google, camera integrata. |
+| ID | Hostname | Tipo | IP | MAC | Note |
+|---|---|---|---|---|---|
+| CAM-01 | — | TP-Link Tapo | 192.168.68.84 | CC:BA:BD:79:E7:65 (TP-Link) | Cloud TP-Link. Porta 80 aperta. |
+| CAM-02 | — | Ezviz (Hangzhou Ezviz) | 192.168.68.52 | 0C:A6:4C:52:89:81 | Telecamera Ezviz confermata. Cloud Ezviz/Hikvision. |
+| CAM-03 | — | Ezviz / Dahua | 192.168.68.94 | 54:D6:0D:F0:6F:EB (Hangzhou Ezviz) | Seconda Ezviz. Porte 80/443 aperte. |
+| CAM-04 | — | Dahua OEM | 192.168.68.96 | 14:A7:8B:CE:F0:63 (Zhejiang Dahua) | Ezviz è sussidiaria Dahua — device Dahua/Ezviz branded. Porta 80 aperta. |
+| CAM-05 | — | Netgear Arlo base station | 192.168.68.95 | 08:02:8E:A3:DD:DC (NETGEAR) | Base station Arlo. Cloud Arlo. Porta 80 aperta. |
+| CAM-06 | — | NVR locale (negozio) | TBD | TBD | Ethernet. Storage locale. Negozio. |
+| CAM-07 | — | Google Nest Hub (camera integrata) | DHCP | — | Cloud Google, camera integrata. |
 
 ### 1.6 IoT — Climatizzazione
 
@@ -96,12 +100,12 @@
 
 ### 1.7 IoT — Automazione
 
-| ID | Hostname | Tipo | IP | Note |
-|---|---|---|---|---|
-| AUTO-01 | tapparella ale | Shutter controller (Shelly?) | DHCP | Controllo fisico tapparelle Camera Ale |
-| AUTO-02 | SAMJIN | Samsung SmartThings Hub | DHCP | Bridge Zigbee/Z-Wave → cloud Samsung |
-| AUTO-03 | Wisol | IoT module embedded (TBD) | DHCP | Modulo embedded — identificare device host |
-| AUTO-04 | ESP_EF1867 | ESP8266/ESP32 custom | DHCP | ⚠️ Firmware e funzione sconosciuti. Priorità identificazione. |
+| ID | Hostname | Tipo | IP | MAC | Note |
+|---|---|---|---|---|---|
+| AUTO-01 | Shelly2PMG3-E4B3232B99FC.local | Shelly Plus 2PM Gen3 | 192.168.68.89 | E4:B3:23:2B:99:FC (Espressif) | Conferma modello da hostname. Doppio relay con power monitoring. Cloud Shelly disabilitato — **auth UI web non abilitata per mantenere compatibilità controllo locale** (rischio R-15 accettato). Porta 80 aperta. |
+| AUTO-02 | SAMJIN (×3) | Samsung SmartThings hub + device | 192.168.68.80, .81, .82 | 28:6D:97:D5:0E:C9, 28:6D:97:D5:42:09, 28:6D:97:D0:FB:FE | Bridge Zigbee/Z-Wave → cloud Samsung. Tre device SmartThings sulla rete. |
+| AUTO-03 | — | Wisol IoT module | 192.168.68.83 | 70:2C:1F:49:15:72 (Wisol) | Modulo embedded — identificare device host fisicamente. |
+| AUTO-04 | ESP_EF1867 | Luce smart sala (Espressif/Tuya) | 192.168.68.51 | 40:F5:20:EF:18:67 (Espressif) | **Identificato (11/04/2026): luce smart sala.** Modulo Espressif ESP8266/ESP32, probabilmente Tuya-compatibile. Profilo rischio assimilabile agli altri device Tuya in rete (.61, .85). R-11 chiuso. |
 
 ### 1.8 Speaker / Display
 
@@ -124,17 +128,17 @@
 
 ### 1.10 Negozio — Sesto San Giovanni
 
-| ID | Hostname | Tipo | IP | Connessione | Note |
-|---|---|---|---|---|---|
-| NEG-01 | cassa negozio | Cassa / Software POS | DHCP | Ethernet | 🔴 Asset critico. Gestisce pagamenti. Flat network. |
-| NEG-02 | pos negozio | Terminale POS fisico | DHCP | Ethernet | 🔴 Asset critico. Dati carte. Flat network. |
-| NEG-03 | android-5edd... | Android (TBD) | DHCP | WiFi | ⚠️ Non identificato. Verificare fisicamente. |
+| ID | Hostname | Tipo | IP | MAC | Connessione | Note |
+|---|---|---|---|---|---|---|
+| NEG-01 | — | PAX Computer — terminale POS #1 | 192.168.68.64 | A0:44:B7:17:84:62 (PAX Computer) | Ethernet | 🔴 Asset critico. Hardware POS PAX. Gestisce pagamenti. Flat network. |
+| NEG-02 | — | PAX Computer — terminale POS #2 | 192.168.68.67 | A0:44:B7:4E:27:10 (PAX Computer) | Ethernet | 🔴 Asset critico. Secondo terminale PAX. Dati carte. Flat network. |
+| NEG-03 | android-5edd2163d46e6f51 | POS mobile negozio (Android) | DHCP | TBD | WiFi | 🔴 **Identificato (11/04/2026): POS mobile negozio.** Presente durante orario di apertura. |
 
 ### 1.11 Server HomeSOC (pianificato — non ancora deployato)
 
 | ID | Hostname | Tipo | IP Target | OS | Ruolo |
 |---|---|---|---|---|---|
-| SOC-01 | homesoc | GMKtec M5 Ultra · Ryzen 7 7730U · 32GB | Statico TBD | Proxmox VE | Hypervisor per tutte le VM del progetto |
+| SOC-01 | homesoc | GMKtec M5 Ultra · Ryzen 7 7730U · 32GB | 192.168.68.200 (DHCP reservation — da configurare dopo collegamento hardware) | Proxmox VE | Hypervisor per tutte le VM del progetto |
 
 ---
 
@@ -272,18 +276,18 @@
 | R-03 | NEG-01, NEG-02 (POS/Cassa) | Tampering — malware POS, RAM scraper | 2 | 3 | **ALTO (6)** | Greenbone scan, Wazuh monitoring | Fase 2 | Aperto |
 | R-04 | NEG-01, NEG-02 (POS/Cassa) | Denial of Service — interruzione attività negozio | 2 | 3 | **ALTO (6)** | Greenbone scan, Uptime Kuma | Fase 2 | Aperto |
 | R-05 | NEG-01, NEG-02 (POS/Cassa) | Lateral Movement da IoT su rete flat | 2 | 3 | **ALTO (6)** | Isolamento VLAN con OPNsense + switch managed | Futuro | Posticipato — hardware insufficiente |
-| R-06 | NAS-01 (WD My Cloud Home) | Information Disclosure — account WD compromesso | 2 | 3 | **ALTO (6)** | 2FA account WD, password robusta, monitoraggio Wazuh | Immediato | Aperto — relay non disabilitabile per design |
+| R-06 | NAS-01 (WD My Cloud Home) | Information Disclosure — account WD compromesso | 2 | 3 | **ALTO (6)** | 2FA account WD, password robusta, monitoraggio Wazuh | Immediato | **Mitigato ✅ — 2FA abilitato 11/04/2026** |
 | R-07 | CAM-01→07 (Telecamere) | Information Disclosure — stream video verso cloud | 2 | 3 | **ALTO (6)** | Blocco internet telecamere (OPNsense futuro), firmware aggiornato | Futuro | Posticipato |
 | R-08 | END-05 (MacBook) | Information Disclosure — keylogger/screen capture | 2 | 3 | **ALTO (6)** | Wazuh agent, FIM, controllo processi | Fase 3 | Aperto |
 | R-09 | SOC-01 (Server HomeSOC) | Tampering — compromissione server monitoring | 1 | 3 | **MEDIO (3)** | SSH hardening, no root, fail2ban, snapshot Proxmox | Fase 2 | Aperto |
 | R-10 | SOC-01 (Server HomeSOC) | Elevation of Privilege — accesso SSH non autorizzato | 1 | 3 | **MEDIO (3)** | Chiavi pubbliche only, fail2ban | Fase 2 | Aperto |
-| R-11 | AUTO-04 (ESP_EF1867) | Spoofing / Info Disclosure — device non identificato | 2 | 2 | **MEDIO (4)** | Identificazione fisica MAC OUI, analisi traffico Wazuh | Immediato | Aperto |
+| R-11 | AUTO-04 (ESP_EF1867) | Spoofing / Info Disclosure — device non identificato | 2 | 2 | **MEDIO (4)** | Identificazione fisica MAC OUI, analisi traffico Wazuh | Immediato | **Chiuso — identificato: luce smart sala (Espressif/Tuya). Rischio residuo assimilato a Tuya cloud (cfr. R-01).** |
 | R-12 | IOT-01, IOT-02 (Robot cinesi) | Tampering — firmware OTA compromesso | 1 | 3 | **MEDIO (3)** | Blocco OTA automatici via DNS, monitoraggio | Fase 3 | Aperto |
 | R-13 | CAM-01→07 (Telecamere) | Tampering — firmware OTA compromesso | 1 | 3 | **MEDIO (3)** | Firmware aggiornato manualmente | Fase 3 | Aperto |
 | R-14 | NEG-01, NEG-02 (POS/Cassa) | Repudiation — assenza log centralizzati | 2 | 2 | **MEDIO (4)** | Wazuh log centralizzati post-deploy | Fase 3 | Aperto |
-| R-15 | AUTO-01 (Shelly) | Elevation of Privilege — controllo fisico dispositivi | 1 | 2 | **BASSO (2)** | Nessun cloud Shelly, auth UI web abilitata | Immediato | Aperto |
-| R-16 | CLIM-01, CLIM-02 (Nest Learning) | Information Disclosure — dati abitudini verso Google | 2 | 1 | **BASSO (2)** | Account Google con 2FA | Immediato | Accettato |
-| R-17 | INF-01→05 (Deco mesh) | Spoofing — DNS poisoning | 1 | 2 | **BASSO (2)** | NextDNS DoH, DNSSEC | Immediato | Aperto |
+| R-15 | AUTO-01 (Shelly) | Elevation of Privilege — controllo fisico dispositivi | 1 | 2 | **BASSO (2)** | Nessun cloud Shelly, auth UI web non abilitata (compatibilità) | Immediato | **Accettato — auth web disabilitata per mantenere controllo locale. Mitigazione futura: VLAN IoT con OPNsense.** |
+| R-16 | CLIM-01, CLIM-02 (Nest Learning) | Information Disclosure — dati abitudini verso Google | 2 | 1 | **BASSO (2)** | Account Google con 2FA | Immediato | **Mitigato ✅ — 2FA Google confermato 11/04/2026** |
+| R-17 | INF-01→05 (Deco mesh) | Spoofing — DNS poisoning | 1 | 2 | **BASSO (2)** | NextDNS DoH, DNSSEC | Immediato | **Parziale — Deco BE65 non supporta DoH a livello router (firmware con DoH in beta). DoH attivo solo su device con profilo NextDNS diretto. DNSSEC attivo. Rivalutare a firmware rilasciato.** |
 
 ### 3.1 Riepilogo per priorità
 
@@ -293,15 +297,16 @@
 | 🟡 MEDIO (3-4) | R-09, R-10, R-11, R-12, R-13, R-14 | Server SOC, ESP custom, firmware IoT, log negozio |
 | 🟢 BASSO (1-2) | R-15, R-16, R-17 | Shelly, Nest, DNS |
 
-### 3.2 Azioni immediate (pre-deployment)
+### 3.2 Azioni immediate (pre-deployment) — stato aggiornato
 
-| Rischio | Azione |
-|---|---|
-| R-06 | Abilitare 2FA su account WD My Cloud Home |
-| R-11 | Identificare ESP_EF1867 fisicamente — MAC OUI su macvendors.com |
-| R-15 | Verificare auth UI web Shelly abilitata, cloud Shelly disabilitato |
-| R-16 | Verificare 2FA su account Google (già accettato — solo conferma) |
-| R-17 | Confermare NextDNS DoH attivo dalla dashboard NextDNS |
+| Rischio | Azione | Stato |
+|---|---|---|
+| R-06 | Abilitare 2FA su account WD My Cloud Home | ✅ Completato 11/04/2026 |
+| R-11 | Identificare ESP_EF1867 tramite MAC OUI lookup + ispezione fisica | ✅ Completato — luce smart sala (Espressif/Tuya) |
+| R-15 | Auth UI web Shelly abilitata, cloud disabilitato | **Accettato** — auth web non abilitata per compatibilità controllo locale |
+| R-16 | Verificare 2FA su account Google (per i Nest) | ✅ Confermato 11/04/2026 |
+| R-17 | Confermare NextDNS DoH attivo | **Parziale** — Deco BE65 non supporta DoH a livello router (firmware beta in arrivo) |
+| TODO-3 | DHCP lease table per IP inventory completo | ✅ Completato — CSV integrato in v1.2 |
 
 ---
 
@@ -380,24 +385,26 @@ La triade **CIA** (Confidentiality · Integrity · Availability) è declinata pe
 ### Assunzioni e limitazioni attuali
 
 - Nessuna VLAN reale — rischi R-05, R-07 classificati come Posticipati — tecnicamente non mitigabili con hardware attuale.
-- WD My Cloud Home è cloud-first by design — relay WD non disabilitabile. Unico controllo possibile: sicurezza account.
-- IP di quasi tutti i device è DHCP — inventory IP completo richiede export DHCP lease table dal Deco.
-- Device non ancora identificati: AUTO-03 (Wisol host), AUTO-04 (ESP_EF1867), NEG-03 (Android negozio).
+- WD My Cloud Home è cloud-first by design — relay WD non disabilitabile. Unico controllo possibile: sicurezza account (2FA abilitato ✅).
+- Deco BE65 non supporta DoH a livello router — aggiornamento firmware con DoH in beta. R-17 parzialmente mitigato.
+- IP DHCP completati da scan ARP CSV (11/04/2026). Alcuni device con MAC randomizzato (es. END-05 C6:... — MAC potenzialmente rotante su iOS/macOS, verificare se privacy MAC è attivo).
 
 ### TODO — prossimi aggiornamenti
 
 | # | Azione | Rischio | Priorità | Stato |
 |---|---|---|---|---|
-| 1 | Abilitare 2FA su account WD My Cloud Home | R-06 | Alta | Da completare |
-| 2 | Identificare ESP_EF1867 tramite MAC OUI lookup + ispezione fisica | R-11 | Alta | Da completare |
-| 3 | Completare colonne IP/MAC con DHCP lease table Deco | Tutti | Media | Da completare |
-| 4 | Identificare device host modulo Wisol (AUTO-03) | R-11 | Media | Da completare |
-| 5 | Verificare Android negozio (NEG-03) fisicamente | — | Media | Da completare |
-| 6 | Aggiornare stato rischi a ogni nuova fase di deployment | Tutti | Ongoing | — |
+| 1 | Abilitare 2FA su account WD My Cloud Home | R-06 | Alta | ✅ Completato |
+| 2 | Identificare ESP_EF1867 | R-11 | Alta | ✅ Completato |
+| 3 | Completare colonne IP/MAC con DHCP lease table Deco | Tutti | Media | ✅ Completato (CSV v1.2) |
+| 4 | Identificare device host modulo Wisol (AUTO-03) | — | Media | Da completare |
+| 5 | Verificare se privacy MAC è attivo su MacBook Pro (END-05) — il MAC C6:A3:2A:A3:A8:0F potrebbe essere randomizzato | END-05 | Media | Da verificare |
+| 6 | Configurare DHCP reservation sul Deco: NAS → .90, MacBook → .108, SOC-01 → .200 (dopo collegamento hardware) | — | Alta | .90 e .108 da fare; .200 dopo hardware |
+| 7 | Rivalutare R-17 dopo rilascio firmware Deco con DoH | R-17 | Bassa | Pending firmware |
+| 8 | Aggiornare stato rischi a ogni nuova fase di deployment | Tutti | Ongoing | — |
 
 **Commit:** `git add docs/01-threat-model.md && git commit -m "docs(threat-model): update vX.Y — <motivo>"`
 
 ---
 
-*File: `docs/01-threat-model.md` · v1.1 · Aprile 2026*
+*File: `docs/01-threat-model.md` · v1.2 · Aprile 2026*
 *HomeSOC Project — Alessandro · LM Sicurezza Informatica · UniMI*

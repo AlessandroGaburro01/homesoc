@@ -1,13 +1,14 @@
 # 02 — Architecture Design
 **Progetto:** HomeSOC · Domestic Security Operations Centre
-**Versione:** 1.0 — Aprile 2026
+**Versione:** 1.1 — Aprile 2026
 **Autore:** Alessandro · LM Sicurezza Informatica · UniMI
 **Prerequisito:** Fase 0 completata — docs/00-charter.md, docs/01-threat-model.md
 
-> Committare con: `git commit -m "docs(architecture): add v1.0 — logical arch, VM layout, DFD, detection use cases"`
+> Committare con: `git commit -m "docs(architecture): update v1.1 — subnet correction, DHCP reservation IPs"`
 
 **Changelog:**
 - v1.0 — Aprile 2026 — Prima stesura Fase 1
+- v1.1 — Aprile 2026 — Correzione subnet 192.168.68.0/24 (era .71), IP DHCP reservation reali (MacBook .108, NAS .90, SOC-01 .200)
 
 ---
 
@@ -26,7 +27,7 @@
 
 ### 1.1 Descrizione
 
-La rete attuale è organizzata su un'unica subnet flat (`192.168.71.0/24`) con due SSID distinti (LAN-MAIN e IoT-SSID) ma **nessun isolamento reale** tra segmenti. Non sono presenti VLAN, switch managed o firewall layer 3.
+La rete attuale è organizzata su un'unica subnet flat (`192.168.68.0/24`) con due SSID distinti (LAN-MAIN e IoT-SSID) ma **nessun isolamento reale** tra segmenti. Non sono presenti VLAN, switch managed o firewall layer 3.
 
 ```
 Internet
@@ -35,22 +36,22 @@ Internet
 [Zyxel Windinfostrada] — Modem bridge, fibra
     │ (PPPoE → Deco)
     ▼
-[Deco BE65 — Salotto] — Gateway NAT, 192.168.71.1
+[Deco BE65 — Salotto] — Gateway NAT, 192.168.68.1
     ├── Wireless backhaul / Ethernet backhaul
-    │   ├── [Deco XE75 Pro — Camera Nicole]   192.168.71.250
-    │   ├── [Deco XE75 — Cucina]              192.168.71.247
+    │   ├── [Deco XE75 Pro — Camera Nicole]   192.168.68.250
+    │   ├── [Deco XE75 — Cucina]              192.168.68.247
     │   ├── [Deco XE75 Pro — Camera Ale]      TBD
     │   └── [Deco XE75 Pro — Negozio]         TBD (Sesto San Giovanni)
     │
     └── [Nighthawk S8000] — Switch unmanaged (Ethernet)
         └── Device cablati su LAN-MAIN
 
-LAN-MAIN (192.168.71.0/24):
+LAN-MAIN (192.168.68.0/24):
   MacBook Pro M1 Pro, iPad/iPhone, NAS WD My Cloud Home,
   Google Home/Nest, Samsung TV, Xbox, Samsung AC,
   Google Nest Hub, sistema audio
 
-IoT-SSID (192.168.71.0/24 — stessa subnet):
+IoT-SSID (192.168.68.0/24 — stessa subnet):
   Robot Dreame/Narwal, Telecamere Tapo/Arlo/Ezviz,
   Shelly relay, Samsung SmartThings, ESP_EF1867
 
@@ -89,12 +90,12 @@ Internet
 [Zyxel Windinfostrada] — Modem bridge
     │
     ▼
-[Deco BE65] — Gateway NAT, 192.168.71.1
+[Deco BE65] — Gateway NAT, 192.168.68.1
     │
     ├── [Nighthawk S8000] — Switch unmanaged
-    │   ├── MacBook Pro M1 Pro     → IP statico (es. 192.168.71.10)
-    │   ├── NAS WD My Cloud Home   → IP statico (es. 192.168.71.20)
-    │   └── SOC-01 (HomeSOC)       → IP statico (es. 192.168.71.100)
+    │   ├── MacBook Pro M1 Pro     → DHCP reservation 192.168.68.108 (MAC C6:A3:2A:A3:A8:0F)
+    │   ├── NAS WD My Cloud Home   → DHCP reservation 192.168.68.90  (MAC 00:00:C0:44:A4:97)
+    │   └── SOC-01 (HomeSOC)       → DHCP reservation 192.168.68.200 (MAC da leggere dopo collegamento)
     │         ├── vm-100 Home Assistant
     │         ├── ct-101 Uptime Kuma + Portainer
     │         ├── ct-102 Greenbone/OpenVAS + Nuclei
@@ -171,14 +172,14 @@ Lo stack difensivo segue il modello **defense-in-depth** organizzato in 6 livell
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                     LAN 192.168.71.0/24                             │
+│                     LAN 192.168.68.0/24                             │
 │                                                                     │
 │  [MacBook Pro M1]                                                   │
 │      │                                                              │
 │      │ Wazuh agent → Manager (TCP 1514 encrypted)                  │
 │      │ ossec-authd → Manager (TCP 1515, enrollment)                 │
 │      ▼                                                              │
-│  [SOC-01 — vm-103 Wazuh Manager]  192.168.71.100                   │
+│  [SOC-01 — vm-103 Wazuh Manager]  192.168.68.200                   │
 │      │                                                              │
 │      ├── Dashboard HTTP/S (TCP 443/5601 — solo LAN)                │
 │      ├── Wazuh API (TCP 55000 — solo LAN)                          │
@@ -385,8 +386,8 @@ I seguenti use case sono i **5 scenari prioritari** da implementare in Fase 3 (W
 | **Priorità** | Alta |
 
 **Prerequisiti:**
-- IP statico NAS-01 (192.168.71.20)
-- Whitelist IP autorizzati per SMB: solo END-05, END-01
+- IP statico NAS-01 (DHCP reservation 192.168.68.90)
+- Whitelist IP autorizzati per SMB: solo END-05 (192.168.68.108), END-01
 - 2FA account WD abilitato (azione immediata pre-deploy)
 
 ---
@@ -473,5 +474,5 @@ Tecniche coperte in Fase 3:
 
 ---
 
-*File: `docs/02-architecture.md` · v1.0 · Aprile 2026*
+*File: `docs/02-architecture.md` · v1.1 · Aprile 2026*
 *HomeSOC Project — Alessandro · LM Sicurezza Informatica · UniMI*

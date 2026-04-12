@@ -7,6 +7,18 @@ Format: [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/)  
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-04-11
+
+### Changed
+- `docs/01-threat-model.md` — Updated to v1.2: corrected subnet to 192.168.68.0/24 (was .71), added IP/MAC from ARP scan CSV, identified ESP_EF1867 as smart light (Espressif/Tuya), identified PAX Computer as POS hardware (NEG-01/02), split Roborock into two distinct assets (IOT-03a home, IOT-03b shop), updated Shelly model (Plus 2PM Gen3), confirmed Ezviz/Dahua cameras, confirmed Narwal FN-LINK module, identified NEG-03 (android-5edd) as POS mobile, updated risk register: R-06 Mitigato (2FA WD enabled), R-11 Chiuso (ESP identified), R-15 Accettato (Shelly auth), R-16 Mitigato (Google 2FA confirmed), R-17 Parziale (Deco BE65 no DoH yet), added DHCP range note (.51+)
+- `docs/02-architecture.md` — Updated to v1.1: corrected subnet to 192.168.68.0/24, updated DHCP reservation IPs (MacBook → .108, NAS → .90, SOC-01 → .200)
+
+### Notes
+- All pre-deployment immediate actions from Phase 0/1 now resolved or formally accepted
+- DHCP reservations to configure on Deco before Phase 2: NAS (.90), MacBook (.108); SOC-01 (.200) after hardware connection
+- DoH on Deco BE65 pending firmware update (beta); R-17 to be re-evaluated on release
+- Wisol (AUTO-03) host device still unidentified — lower priority, not blocking Phase 2
+
 ## [0.2.0] — 2026-04-11
 
 ### Added
