@@ -1,12 +1,16 @@
 # Runbook — Greenbone Community Edition Deploy (ct-102)
 **Progetto:** HomeSOC · Domestic Security Operations Centre  
 **File:** `runbooks/greenbone-deploy.md`  
-**Versione:** 1.0 — Aprile 2026  
+**Versione:** 1.1 — Aprile 2026  
 **Autore:** Alessandro · LM Sicurezza Informatica · UniMI  
 **Fase:** 2 — Deploy  
 **Prerequisito:** `runbooks/proxmox-setup.md` completato — SOC-01 operativo, pool `phase2` creato
 
 > **Scopo:** Creare e configurare `ct-102` su Proxmox VE come container LXC Debian 12, installare Greenbone Community Edition (GCE) via Docker Compose, eseguire la prima scan di vulnerabilità sulla rete LAN e sui target del negozio (UC-05). Al termine di questo runbook Greenbone deve essere operativo, raggiungibile via browser, con almeno una scan schedulata settimanale e il primo report generato.
+
+**Changelog:**
+- v1.0 — Aprile 2026 — Prima stesura
+- v1.1 — Aprile 2026 — Fix post-deployment reale: template versioning dinamico, pool pre-creazione, disco 50 GB, nuovo nome file compose, patch GSA slim + localhost binding, rimozione comandi gvmd CLI deprecati, fix scan 0% (cap_add + redis socket volume)
 
 ---
 
@@ -39,23 +43,20 @@ Prima di procedere verificare che il runbook `proxmox-setup.md` sia completato a
 pveversion
 # Output atteso: pve-manager/8.x.x
 
-# Verifica storage disponibile (ct-102 richiede 32 GB)
+# Verifica storage disponibile (ct-102 richiede 50 GB)
 pvesm status
-# local-lvm deve avere ≥ 32 GB liberi
+# local-lvm deve avere ≥ 50 GB liberi
 
 # Verifica RAM disponibile (ct-102 richiede 4 GB)
 free -h
 # Deve essere disponibile almeno 4 GB oltre al consumo corrente
 
-# Verifica che il template Debian 12 sia scaricato
-pveam list local | grep debian-12
-# Se non presente, scaricarlo (vedi passo 1.4)
-
 # Verifica che il pool phase2 esista
 pvesh get /pools/phase2
+# Se restituisce errore 404 → crearlo (vedi passo 1.4)
 ```
 
-> ✅ **Checkpoint:** Se uno di questi comandi fallisce, tornare al runbook `proxmox-setup.md` e completare le verifiche mancanti prima di continuare.
+> ✅ **Checkpoint:** Se `pvesm status` mostra meno di 50 GB liberi su `local-lvm`, non procedere. I feed SCAP/CPE di Greenbone occupano molto più spazio rispetto alle versioni precedenti — con 32 GB il database crasha durante la sincronizzazione iniziale.
 
 ### 1.2 Specifiche ct-102
 
@@ -65,15 +66,17 @@ pvesh get /pools/phase2
 | Nome | `ct-102-greenbone` |
 | OS | Debian 12 (bookworm) — template LXC |
 | vCPU | 4 |
-| RAM | 4 GB (4096 MB) — **no balloon** (Greenbone è memory-intensive) |
+| RAM | 4 GB (4096 MB) — **no balloon** |
 | Swap | 512 MB |
-| Storage | 32 GB su `local-lvm` |
+| Storage | **50 GB** su `local-lvm` |
 | Network | `vmbr0` (LAN — 192.168.68.0/24) |
-| IP target | `192.168.68.203` (DHCP reservation da impostare) |
+| IP target | `192.168.68.203` (DHCP reservation) |
 | Container type | **Privilegiato** (richiesto per Docker inside LXC) |
 | Features | `nesting=1`, `keyctl=1` (richiesti per Docker) |
 
-> ⚠️ **IMPORTANTE:** Il container **deve** essere creato come **privilegiato** (`Unprivileged: No`) con le features `nesting=1` e `keyctl=1` abilitate. Senza queste impostazioni Docker non funzionerà all'interno dell'LXC.
+> ⚠️ **IMPORTANTE — due requisiti critici:**
+> 1. Il container **deve** essere **privilegiato** (`Unprivileged: No`). Senza questa impostazione Docker non funzionerà.
+> 2. Il disco deve essere **50 GB** (non 32 GB). I dizionari CPE/SCAP scaricati durante la sync dei feed occupano oltre 35 GB.
 
 ### 1.3 Informazioni di rete
 
@@ -85,26 +88,37 @@ pvesh get /pools/phase2
 | Porta GSA (Web UI) | `9392/tcp` |
 | Accesso Web UI | `http://192.168.68.203:9392` |
 
-### 1.4 Download template Debian 12 (se non presente)
+### 1.4 Creazione pool phase2 (se non presente)
+
+```bash
+# Su SOC-01 — eseguire PRIMA di creare il container
+pvesh create /pools -poolid phase2
+
+# Verifica (se il pool esiste già restituisce errore ignorabile)
+pvesh get /pools/phase2
+```
+
+### 1.5 Download template Debian 12
+
+Il team Proxmox aggiorna frequentemente i template rimuovendo le versioni precedenti. Non hardcodare il numero di versione — cercare sempre quello disponibile al momento.
 
 ```bash
 # Su SOC-01
-# Aggiorna lista template disponibili
 pveam update
 
-# Cerca template Debian 12
-pveam available | grep debian-12
+# Cerca la versione attualmente disponibile
+pveam available | grep debian-12-standard
+# Output esempio: system  debian-12-standard_12.12-1_amd64.tar.zst
+# ← il numero di versione cambia nel tempo — usare quello che compare
 
-# Scarica il template (scegliere la versione più recente)
-pveam download local debian-12-standard_12.x-1_amd64.tar.zst
+# Scarica il template trovato (sostituire il numero di versione)
+pveam download local debian-12-standard_12.12-1_amd64.tar.zst
 
 # Verifica download
 pveam list local | grep debian-12
 ```
 
-### 1.5 Target di scan — asset inventario
-
-I target principali per la prima scan sono:
+### 1.6 Target di scan — asset inventario
 
 | Asset | ID | IP | Priorità | Use Case |
 |---|---|---|---|---|
@@ -114,131 +128,28 @@ I target principali per la prima scan sono:
 | MacBook Pro | END-05 | `192.168.68.108` | Alta | UC-03 |
 | LAN completa | — | `192.168.68.0/24` | Media | Baseline |
 
-> 📌 I POS (NEG-01, NEG-02) sono stati identificati come dispositivi **PAX Computer** dall'inventario IP. Sono i target prioritari dell'UC-05: qualsiasi CVE con CVSS ≥ 7.0 su questi host genera un ticket TheHive (configurazione Fase 4).
+> 📌 I POS (NEG-01, NEG-02) sono stati identificati come dispositivi **PAX Computer** dall'inventario IP. Sono i target prioritari dell'UC-05.
 
 ---
 
 ## 2. Creazione CT su Proxmox
 
-La creazione avviene dalla **Web UI Proxmox** (`https://192.168.68.200:8006`) tramite procedura guidata, oppure interamente via CLI (sezione 2.7).
+### 2.1 Creazione via CLI (metodo consigliato)
 
-### 2.1 Avvia la creazione guidata
-
-**Web UI:** `soc-01` → **Create CT** (pulsante in alto a destra)
-
-### 2.2 Tab "General"
-
-| Campo | Valore |
-|---|---|
-| Node | `soc-01` |
-| CT ID | `102` |
-| Hostname | `ct-102-greenbone` |
-| Pool | `phase2` |
-| Password | *(password root complessa, ≥16 caratteri)* |
-| SSH public key | *(incollare la chiave pubblica ED25519 del MacBook — opzionale ma consigliato)* |
-| **Unprivileged container** | ❌ **DESELEZIONARE** — il container deve essere **PRIVILEGIATO** |
-
-> ⚠️ **CRITICO:** La checkbox "Unprivileged container" deve essere **deselezionata**. Un container unprivileged non supporta Docker in modo affidabile e causerà errori durante il deploy di Greenbone.
-
-### 2.3 Tab "Template"
-
-| Campo | Valore |
-|---|---|
-| Storage | `local` |
-| Template | `debian-12-standard_12.x-1_amd64.tar.zst` |
-
-### 2.4 Tab "Disks"
-
-| Campo | Valore |
-|---|---|
-| Storage | `local-lvm` |
-| Disk size (GiB) | `32` |
-
-### 2.5 Tab "CPU"
-
-| Campo | Valore |
-|---|---|
-| Cores | `4` |
-| CPU limit | *(lasciare vuoto — no limit)* |
-
-### 2.6 Tab "Memory"
-
-| Campo | Valore |
-|---|---|
-| Memory (MiB) | `4096` |
-| Swap (MiB) | `512` |
-
-> ℹ️ Il **ballooning è disabilitato** intenzionalmente per Greenbone. GCE utilizza intensivamente la RAM per i feed NVT e per il motore OpenVAS — un limite dinamico causerebbe degradazione delle performance durante le scan.
-
-### 2.7 Tab "Network"
-
-| Campo | Valore |
-|---|---|
-| Name | `eth0` |
-| Bridge | `vmbr0` |
-| VLAN Tag | *(lasciare vuoto)* |
-| Firewall | ✅ Abilitare |
-| IPv4 | `DHCP` *(la reservation viene impostata nel passo 6)* |
-| IPv6 | `SLAAC` oppure `None` |
-
-### 2.8 Tab "DNS"
-
-| Campo | Valore |
-|---|---|
-| DNS domain | `homesoc.lan` |
-| DNS servers | `192.168.68.1` |
-
-### 2.9 Tab "Confirm"
-
-Rivedere il riepilogo. Verificare:
-- Unprivileged: **No** (privilegiato)
-- Cores: 4
-- RAM: 4096 MB
-- Disk: 32 GB su local-lvm
-- Bridge: vmbr0
-
-**Deselezionare** "Start after created" — il container deve essere configurato prima dell'avvio.
-
-Click **Finish**.
-
-### 2.10 Abilita features Docker (obbligatorio — CLI)
-
-Dopo la creazione del CT, dalla shell di SOC-01:
+La CLI garantisce che tutti i parametri critici siano impostati correttamente.
 
 ```bash
-# Abilita nesting e keyctl — OBBLIGATORIO per Docker
-pct set 102 --features nesting=1,keyctl=1
+# Su SOC-01
+# Recupera il nome esatto del template scaricato
+TEMPLATE=$(pveam list local | grep debian-12-standard | awk '{print $1}')
+echo "Template: $TEMPLATE"
 
-# Verifica configurazione
-pct config 102 | grep features
-# Output atteso: features: keyctl=1,nesting=1
-```
-
-### 2.11 Avvio container
-
-```bash
-# Avvia ct-102
-pct start 102
-
-# Verifica stato
-pct status 102
-# Output atteso: status: running
-
-# Verifica IP assegnato via DHCP
-pct exec 102 -- ip addr show eth0 | grep inet
-# Annotare l'IP assegnato — sarà usato fino alla DHCP reservation (passo 6)
-```
-
-### 2.12 Alternativa — Creazione via CLI (metodo completo)
-
-```bash
-# Crea il container con un solo comando
-pct create 102 local:vztmpl/debian-12-standard_12.x-1_amd64.tar.zst \
+pct create 102 ${TEMPLATE} \
   --hostname ct-102-greenbone \
   --cores 4 \
   --memory 4096 \
   --swap 512 \
-  --rootfs local-lvm:32 \
+  --rootfs local-lvm:50 \
   --net0 name=eth0,bridge=vmbr0,firewall=1,ip=dhcp \
   --nameserver 192.168.68.1 \
   --searchdomain homesoc.lan \
@@ -246,9 +157,54 @@ pct create 102 local:vztmpl/debian-12-standard_12.x-1_amd64.tar.zst \
   --unprivileged 0 \
   --features nesting=1,keyctl=1 \
   --onboot 1 \
-  --password  # Il sistema chiederà la password root interattivamente
+  --password
+# Il sistema chiede la password root del container interattivamente
+```
 
-# Avvia
+> ⚠️ **CRITICO:** `--unprivileged 0` = container **privilegiato**. Se si omette o si usa `1`, Docker non funzionerà e sarà necessario ricreare il container da zero.
+
+### 2.2 Verifica features e avvio
+
+```bash
+# Su SOC-01
+pct config 102 | grep -E "features|unprivileged|cores|memory|rootfs"
+# Output atteso:
+# features: keyctl=1,nesting=1
+# unprivileged: 0
+# cores: 4
+# memory: 4096
+# rootfs: local-lvm:50
+
+pct start 102
+pct status 102
+
+# Annota l'IP DHCP temporaneo assegnato
+sleep 5
+pct exec 102 -- ip addr show eth0 | grep inet
+```
+
+### 2.3 Alternativa — Creazione via Web UI
+
+**Web UI Proxmox** → `soc-01` → **Create CT**
+
+| Tab | Campo | Valore |
+|---|---|---|
+| General | CT ID | `102` |
+| General | Hostname | `ct-102-greenbone` |
+| General | Pool | `phase2` |
+| General | **Unprivileged container** | ❌ **DESELEZIONARE** |
+| Template | Template | `debian-12-standard_12.XX-1_amd64.tar.zst` |
+| Disks | Disk size | **`50`** GiB |
+| CPU | Cores | `4` |
+| Memory | Memory | `4096` MiB / Swap `512` MiB |
+| Network | Bridge | `vmbr0` / IPv4 `DHCP` |
+| DNS | DNS servers | `192.168.68.1` |
+
+Dopo la creazione, **non avviare** — aggiungere prima le features:
+
+```bash
+# Su SOC-01
+pct set 102 --features nesting=1,keyctl=1
 pct start 102
 ```
 
@@ -256,176 +212,113 @@ pct start 102
 
 ## 3. Configurazione base del container
 
-Accedere alla shell del container da SOC-01:
+Accedere al container:
 
 ```bash
-# Metodo 1: via pct exec (da SOC-01)
+# Su SOC-01 — metodo diretto
 pct exec 102 -- bash
 
-# Metodo 2: via console Web UI
-# Proxmox Web UI: ct-102 → Console
-
-# Metodo 3: SSH (se configurata la chiave pubblica)
-ssh root@<IP-ct-102>
+# Oppure SSH all'IP DHCP temporaneo letto al passo 2.2
+ssh root@<IP-DHCP-ct-102>
 ```
+
+> ℹ️ **Contesto terminale:** i comandi `pct exec`, `pct config`, `pct status` vanno eseguiti su **SOC-01**. I comandi seguenti vanno eseguiti **dentro ct-102**. Per leggere il MAC address dall'interno del container usare `ip link show eth0 | grep "link/ether"` — i comandi `pct` non esistono dentro l'LXC.
 
 ### 3.1 Aggiornamento sistema
 
 ```bash
-# Aggiorna lista pacchetti e sistema
+# Dentro ct-102
 apt update && apt full-upgrade -y
 
-# Installa utility essenziali
 apt install -y \
-  curl \
-  wget \
-  gnupg \
-  ca-certificates \
-  lsb-release \
-  apt-transport-https \
-  software-properties-common \
-  htop \
-  net-tools \
-  iputils-ping \
-  ncat \
-  jq \
-  unzip \
-  git \
-  cron \
-  rsync
+  curl wget gnupg ca-certificates lsb-release \
+  apt-transport-https software-properties-common \
+  htop net-tools iputils-ping ncat jq unzip git cron rsync
 ```
 
-### 3.2 Configurazione hostname e /etc/hosts
+### 3.2 Hostname e timezone
 
 ```bash
-# Verifica hostname
-hostname
-# Output atteso: ct-102-greenbone
+# Dentro ct-102
+timedatectl set-timezone Europe/Rome
 
-# Aggiorna /etc/hosts
 cat > /etc/hosts << 'EOF'
 127.0.0.1       localhost
 127.0.1.1       ct-102-greenbone.homesoc.lan ct-102-greenbone
 192.168.68.203  ct-102-greenbone.homesoc.lan ct-102-greenbone
 EOF
+
+timedatectl status | grep "Time zone"
+# Output atteso: Time zone: Europe/Rome (CET, +0100)
 ```
 
-### 3.3 Configurazione timezone
+### 3.3 Struttura directory report
 
 ```bash
-timedatectl set-timezone Europe/Rome
-
-# Verifica
-timedatectl status
-# "Time zone: Europe/Rome (CET, +0100)"
-# "System clock synchronized: yes"
-```
-
-### 3.4 Hardening SSH del container
-
-```bash
-# Cambia porta SSH per sicurezza
-sed -i 's/#Port 22/Port 2222/' /etc/ssh/sshd_config
-
-# Disabilita login root via password (se è stata aggiunta la chiave pubblica)
-# SOLO SE si è aggiunta la chiave pubblica al passo 2.2
-# sed -i 's/#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config
-
-# Disabilita autenticazione password (se chiave configurata)
-echo "PasswordAuthentication no" >> /etc/ssh/sshd_config
-
-systemctl restart ssh
-
-# Verifica porta 2222
-ss -tlnp | grep 2222
-```
-
-> ⚠️ Se non è stata aggiunta la chiave pubblica al passo 2.2, non disabilitare PasswordAuthentication — si perderebbe l'accesso SSH. In alternativa aggiungere la chiave ora con `ssh-copy-id -p 2222 root@<IP-ct-102>` prima di disabilitare la password.
-
-### 3.5 Crea struttura directory per i report
-
-```bash
-# Directory per i report Greenbone esportati
+# Dentro ct-102
 mkdir -p /opt/homesoc/lab-reports/greenbone/{pdf,xml,csv}
-
-# Directory per gli script di automazione
 mkdir -p /opt/homesoc/scripts
-
-# Permessi
-chmod 750 /opt/homesoc
-chmod 750 /opt/homesoc/lab-reports
-chmod 750 /opt/homesoc/lab-reports/greenbone
+mkdir -p /opt/homesoc/backups/greenbone-volumes
+chmod 750 /opt/homesoc /opt/homesoc/lab-reports /opt/homesoc/lab-reports/greenbone
 ```
 
 ---
 
 ## 4. Installazione Docker Engine
 
-Greenbone Community Edition utilizza Docker Compose come metodo di deploy ufficiale. Prima di installare GCE è necessario installare Docker Engine.
-
 ### 4.1 Rimozione versioni precedenti
 
 ```bash
-# Rimuovi versioni vecchie se presenti
+# Dentro ct-102
 for pkg in docker.io docker-doc docker-compose podman-docker containerd runc; do
   apt remove -y $pkg 2>/dev/null || true
 done
 ```
 
-### 4.2 Aggiunta repository Docker ufficiale
+### 4.2 Repository ufficiale Docker
 
 ```bash
-# Aggiungi chiave GPG Docker
+# Dentro ct-102
 install -m 0755 -d /etc/apt/keyrings
 curl -fsSL https://download.docker.com/linux/debian/gpg \
   -o /etc/apt/keyrings/docker.asc
 chmod a+r /etc/apt/keyrings/docker.asc
 
-# Aggiungi repository Docker
 echo \
   "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] \
   https://download.docker.com/linux/debian \
   $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
   tee /etc/apt/sources.list.d/docker.list > /dev/null
 
-# Aggiorna e installa Docker
 apt update
 apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 ```
 
-### 4.3 Verifica e abilitazione Docker
+### 4.3 Avvio e test
 
 ```bash
-# Avvia e abilita Docker all'avvio
+# Dentro ct-102
 systemctl enable docker
 systemctl start docker
 
-# Verifica stato
-systemctl is-active docker
-# Output atteso: active
-
-# Test installazione
 docker run --rm hello-world
-# Output atteso: "Hello from Docker!"
 ```
 
-> ✅ **Checkpoint:** Se il comando `docker run hello-world` riesce, Docker è correttamente installato. Se fallisce con errori di permessi o namespace, verificare che il container sia **privilegiato** e abbia le features `nesting=1,keyctl=1` (passo 2.10).
+Output atteso: `Hello from Docker!`
 
-### 4.4 Configurazione Docker daemon
+> ⚠️ Se fallisce con errori namespace: il container non è privilegiato. Verificare su SOC-01 con `pct config 102 | grep unprivileged` — deve essere `0`.
+
+### 4.4 Log rotation
 
 ```bash
-# Configura log rotation per evitare saturazione disco
+# Dentro ct-102
 cat > /etc/docker/daemon.json << 'EOF'
 {
   "log-driver": "json-file",
-  "log-opts": {
-    "max-size": "10m",
-    "max-file": "3"
-  },
+  "log-opts": { "max-size": "10m", "max-file": "3" },
   "storage-driver": "overlay2"
 }
 EOF
-
 systemctl restart docker
 ```
 
@@ -433,133 +326,116 @@ systemctl restart docker
 
 ## 5. Deploy Greenbone Community Edition
 
-### 5.1 Scarica il file docker-compose ufficiale
-
-Greenbone distribuisce la Community Edition tramite un file `docker-compose.yml` ufficiale mantenuto nel repository `greenbone/greenbone-community-container`.
+### 5.1 Download file docker-compose
 
 ```bash
-# Crea directory di lavoro per GCE
+# Dentro ct-102
 mkdir -p /opt/greenbone && cd /opt/greenbone
 
-# Scarica il docker-compose.yml ufficiale
-curl -fO https://greenbone.github.io/docs/latest/_static/docker-compose-22.4.yml
-mv docker-compose-22.4.yml docker-compose.yml
+# Il file ha cambiato nome rispetto alle versioni precedenti
+curl -fO -L https://greenbone.github.io/docs/latest/_static/compose.yaml
+mv compose.yaml docker-compose.yml
 
-# Verifica contenuto
-cat docker-compose.yml | grep "image:" | head -10
+ls -lh docker-compose.yml
 ```
 
-> 📌 **Verifica versione:** La versione consigliata è la 22.4 (GVM 22.4 — stabile). Controllare eventuali versioni più recenti su https://greenbone.github.io/docs/latest/ prima di procedere.
+### 5.2 Patch obbligatorie — applicare prima del pull
 
-### 5.2 Configurazione variabili d'ambiente
+Applicare le tre patch seguenti nell'ordine. Correggono problemi noti nella versione corrente del file ufficiale.
 
 ```bash
-# Crea file .env con configurazione base
+# Dentro ct-102
+cd /opt/greenbone
+
+# Patch 1: sostituisce gsa:stable-slim (immagine non pubblicata) con gsa:stable
+sed -i 's/gsa:stable-slim/gsa:stable/g' docker-compose.yml
+
+# Patch 2: rimuove il binding 127.0.0.1 che blocca l'accesso dalla LAN
+sed -i 's/127.0.0.1://g' docker-compose.yml
+
+# Patch 3: fix scan bloccata a 0%
+# Rimuove network_mode: host (incompatibile con la comunicazione Redis via bridge)
+sed -i '/network_mode: "host"/d' docker-compose.yml
+
+# Aggiunge cap_add per raw packet al servizio openvas
+sed -i '/^  openvas:/{n; /image:/a\    cap_add:\n      - NET_RAW\n      - NET_ADMIN
+}' docker-compose.yml
+
+# Monta il socket Redis nel servizio openvas
+sed -i '/^  openvas:/,/^  [a-z]/{
+  /openvas_log_data_vol:\/var\/log\/openvas/a\      - redis_socket_vol:/run/redis
+}' docker-compose.yml
+
+# Verifica patch 1 e 2
+grep -E "slim|127\.0\.0\.1" docker-compose.yml
+# Output atteso: nessuna riga (patch applicate)
+
+# Verifica patch 3 — blocco openvas risultante
+grep -A 10 "^  openvas:" docker-compose.yml | grep -E "cap_add|NET_RAW|redis_socket"
+# Output atteso:
+#     cap_add:
+#       - NET_RAW
+#       - NET_ADMIN
+#       - redis_socket_vol:/run/redis
+```
+
+> ℹ️ **Perché la patch 3:** il container `openvas` comunica con Redis tramite socket Unix. Senza il volume `redis_socket_vol:/run/redis` montato, lo scanner non riesce a passare la lista degli host alla coda di scan, producendo l'errore `attack_network: got NULL host` e la scan rimane bloccata allo 0% nonostante gli host vengano trovati correttamente.
+
+### 5.3 Configurazione variabili d'ambiente
+
+```bash
+# Dentro ct-102
 cat > /opt/greenbone/.env << 'EOF'
-# Greenbone Community Edition — HomeSOC ct-102
-# Configurazione variabili ambiente
-
-# Porta GSA (web interface) — esposta sulla LAN
-GVMD_ADMIN_PASSWORD=CHANGEME_STRONGPASSWORD
-
-# Porta esterna GSA
+GVMD_ADMIN_PASSWORD=CAMBIA_QUESTA_PASSWORD
 GSA_PORT=9392
-
-# Timezone
 TZ=Europe/Rome
 EOF
 
-# ⚠️ SOSTITUIRE CHANGEME_STRONGPASSWORD con una password sicura (≥16 caratteri)
-# Editare il file con nano:
+# Modificare la password con una robusta (≥16 caratteri)
 nano /opt/greenbone/.env
 ```
 
-> 🔒 **Sicurezza:** La password admin GCE deve essere robusta. Usare un gestore password per generarla e salvarla. Questa è la chiave di accesso all'intero sistema di vulnerability scanning.
+> 🔒 Usare un gestore password per generare e salvare questa credenziale.
 
-### 5.3 Pull immagini Docker
+### 5.4 Pull immagini Docker
 
 ```bash
+# Dentro ct-102
 cd /opt/greenbone
-
-# Pull di tutte le immagini (operazione lunga — ~3-5 GB totali)
 docker compose -f docker-compose.yml pull
-
-# Verifica immagini scaricate
-docker images | grep greenbone
 ```
 
-> ℹ️ Il pull delle immagini richiede **10-20 minuti** a seconda della velocità della connessione. Le immagini principali sono:
-> - `greenbone/gvm-libs` — librerie condivise
-> - `greenbone/openvas-scanner` — scanner OpenVAS
-> - `greenbone/ospd-openvas` — Open Scanner Protocol daemon
-> - `greenbone/gvmd` — GVM Manager daemon
-> - `greenbone/gsad` — Greenbone Security Assistant daemon (web UI)
-> - `greenbone/notus-scanner` — scanner per Notus (pacchetti locali)
+> ⏱️ Il pull richiede **10-20 minuti** (~3-5 GB totali). Lasciare completare senza interrompere.
 
-### 5.4 Avvio stack Greenbone
+### 5.5 Avvio stack
 
 ```bash
+# Dentro ct-102
 cd /opt/greenbone
-
-# Avvia tutti i servizi in background
 docker compose -f docker-compose.yml up -d
-
-# Verifica stato container (attendere che tutti siano "Up")
+sleep 30
 docker compose -f docker-compose.yml ps
 ```
 
-Output atteso (dopo ~2 minuti dall'avvio):
+I container principali devono essere `Up`. Alcuni (es. `configure-openvas`, `gpg-data`, `gvm-config`, `pg-gvm-migrator`) mostrano `Exited (0)` — è normale: sono container one-shot di inizializzazione.
 
-```
-NAME                    IMAGE                          STATUS
-greenbone-gvmd-1        greenbone/gvmd:stable          Up X minutes
-greenbone-gsad-1        greenbone/gsad:stable          Up X minutes
-greenbone-ospd-1        greenbone/ospd-openvas:stable  Up X minutes
-greenbone-openvas-1     greenbone/openvas-scanner:...  Up X minutes
-greenbone-notus-1       greenbone/notus-scanner:...    Up X minutes
-greenbone-redis-1       greenbone/redis-server:...     Up X minutes
-greenbone-pg-gvm-1      greenbone/pg-gvm:stable        Up X minutes
-```
+> ℹ️ I nomi dei container seguono il formato `greenbone-community-edition-<servizio>-1`. Il servizio Redis si chiama `redis-server` (non `redis`).
 
-> ✅ **Checkpoint:** Tutti i container devono avere status `Up`. Se qualcuno è in `Exit` o `Restarting`, controllare i log con `docker compose logs <service-name>`.
+### 5.6 Attesa sincronizzazione feed NVT
 
-### 5.5 Attesa feed NVT — fase di sincronizzazione iniziale
-
-Al primo avvio, Greenbone deve scaricare e sincronizzare i **feed NVT (Network Vulnerability Tests)**. Questo processo richiede **30-90 minuti** al primo avvio.
+Al primo avvio Greenbone scarica e processa i feed NVT. Questo richiede **45-90 minuti**.
 
 ```bash
-# Monitora il progresso della sincronizzazione feed
-docker compose -f docker-compose.yml logs -f greenbone-gvmd-1 | grep -i "feed\|sync\|loading"
-
-# In alternativa, controlla il log di openvas-scanner
-docker compose -f docker-compose.yml logs -f greenbone-openvas-1 | grep -i "NVT\|sync\|finish"
-
-# Verifica se il feed è stato sincronizzato (cerca il count NVT)
-docker exec -it greenbone-gvmd-1 gvmd --get-feeds
+# Dentro ct-102 — monitora (Ctrl+C per uscire)
+docker compose -f /opt/greenbone/docker-compose.yml logs -f openvas ospd-openvas
 ```
 
-> ⚠️ **Non eseguire scan durante la sincronizzazione feed.** Attendere che il feed NVT sia completamente caricato prima di configurare i target. Una scan avviata con feed incompleto produrrà risultati inaffidabili.
+> ⚠️ **Importante:** I comandi CLI `gvmd --get-feeds`, `--rebuild-scap`, `--rebuild-cert` sono stati **rimossi** nelle versioni recenti di GCE e restituiscono `Unknown option`. L'unico modo affidabile per verificare lo stato dei feed è la **Web UI → Administration → Feed Status**. Non avviare scan finché tutti i feed non mostrano il badge verde **Current**.
 
-Indicatori che la sincronizzazione è completa:
-- I log di `gvmd` mostrano "Feed import: done" o simile
-- Il conteggio NVT in `gvmd --get-feeds` è stabile (tipicamente 50.000–80.000 NVT)
-
-### 5.6 Verifica porta GSA
+### 5.7 Servizio systemd per avvio automatico
 
 ```bash
-# Verifica che la porta 9392 sia in ascolto
-ss -tlnp | grep 9392
-# Output atteso: LISTEN 0 ... *:9392 ...
-
-# Test connettività dalla shell del container
-curl -sk https://localhost:9392 -o /dev/null -w "%{http_code}"
-# Output atteso: 200 oppure 302
-```
-
-### 5.7 Configura avvio automatico all'avvio del container
-
-```bash
-# Crea systemd service per avviare Greenbone all'avvio del container
+# Dentro ct-102
 cat > /etc/systemd/system/greenbone-community.service << 'EOF'
 [Unit]
 Description=Greenbone Community Edition (Docker Compose)
@@ -580,142 +456,95 @@ EOF
 
 systemctl daemon-reload
 systemctl enable greenbone-community.service
-
-# Test: verifica che il servizio sia abilitato
 systemctl is-enabled greenbone-community.service
-# Output: enabled
+# Output atteso: enabled
 ```
 
 ---
 
 ## 6. Configurazione iniziale GSA
 
-### 6.1 Cambio password admin (se non impostata via .env)
+### 6.1 DHCP reservation e IP fisso
 
 ```bash
-# Imposta o resetta la password dell'utente admin via CLI
-docker exec -it greenbone-gvmd-1 \
-  gvmd --user=admin --new-password="TuaPasswordSicura16+"
-
-# Verifica: deve restituire 0 (successo)
-echo "Exit code: $?"
+# Dentro ct-102 — leggi il MAC address
+ip link show eth0 | grep "link/ether"
+# Output: link/ether AA:BB:CC:DD:EE:FF brd ff:ff:ff:ff:ff:ff
+# ← annotare il MAC
 ```
 
-### 6.2 Primo accesso Web UI
+Creare la DHCP reservation sul Deco BE65 (app TP-Link Deco → Avanzate → LAN → Prenotazione DHCP):
+- MAC: `AA:BB:CC:DD:EE:FF`
+- IP: `192.168.68.203`
 
-Da browser sul MacBook:
+```bash
+# Dentro ct-102 — applica il nuovo IP
+systemctl restart networking
+ip addr show eth0 | grep inet
+# Deve mostrare 192.168.68.203
 ```
-http://192.168.68.203:9392
+
+### 6.2 Verifica porta e primo accesso
+
+```bash
+# Su SOC-01
+nc -zv 192.168.68.203 9392 && echo "PORTA APERTA" || echo "PORTA CHIUSA"
 ```
 
-> ⚠️ Se il container ha ancora un IP DHCP diverso da .203, usare l'IP corrente (letto con `pct exec 102 -- ip addr show eth0 | grep inet`). La DHCP reservation viene impostata nel passo successivo.
+Da browser sul MacBook: `http://192.168.68.203:9392`
 
-Credenziali di primo accesso:
-- **Username:** `admin`
-- **Password:** quella impostata nel `.env` o con `gvmd --new-password`
+Credenziali: username `admin`, password impostata nel `.env`.
 
-### 6.3 Impostazioni base interfaccia
-
-Dopo il primo login, navigare in **Administration → Settings** e verificare/configurare:
-
-| Impostazione | Valore |
-|---|---|
-| Timezone | `Europe/Rome` |
-| Rows per page | `50` |
-| Default scanner | `OpenVAS` |
-| Auto-refresh interval | `30 seconds` |
-
-### 6.4 Verifica stato feed e scanner
+### 6.3 Verifica stato feed
 
 **Web UI:** `Administration` → `Feed Status`
 
-I feed devono essere in stato `Current` (verde):
-- **NVT** — Network Vulnerability Tests
-- **CERT-Bund Advisories**
-- **DFN-CERT Advisories**
-- **SCAP Data** (CVE, CPE)
-
-Se uno dei feed è in stato `Outdated` o `Update in progress`, attendere il completamento prima di procedere con le scan.
+Tutti i feed devono essere **Current** (verde) prima di procedere con le scan:
+- NVT, CERT-Bund, DFN-CERT, SCAP Data
 
 ---
 
 ## 7. Configurazione target e scan policy
 
-### 7.1 Crea credenziali per scan autenticata (opzionale)
-
-Le scan autenticate permettono di rilevare vulnerabilità che richiedono accesso al sistema (es. patch mancanti). Per la scan LAN è opzionale; per i POS del negozio è consigliata se si hanno credenziali di accesso.
-
-**Web UI:** `Configuration` → `Credentials` → `+ New Credential`
-
-| Campo | Valore |
-|---|---|
-| Name | `homesoc-scan-creds` |
-| Type | `Username + Password` |
-| Username | *(credenziale di accesso al dispositivo, se disponibile)* |
-| Password | *(password)* |
-
-> ℹ️ Per la prima scan si procede **senza credenziali** (scan non autenticata). Questo è il metodo standard per un assessment esterno e produce risultati comparabili a quelli che vedrebbe un attaccante non autenticato.
-
-### 7.2 Crea target — POS Negozio (UC-05)
+### 7.1 Target — UC-05 POS Negozio
 
 **Web UI:** `Configuration` → `Targets` → `+ New Target`
-
-**Target 1 — Negozio POS:**
 
 | Campo | Valore |
 |---|---|
 | Name | `UC-05 — POS Negozio (NEG-01, NEG-02)` |
 | Hosts | `192.168.68.64,192.168.68.67` |
 | Port list | `All IANA assigned TCP and UDP` |
-| Alive test | `ICMP, TCP-ACK Service & ARP Ping` |
-| Credentials for SSH | *(lasciare vuoto — scan non autenticata)* |
-| Comment | `PAX Computer POS — target UC-05 CVSS ≥ 7.0` |
+| **Alive test** | **`Consider Alive`** |
+| Credentials | *(lasciare vuoto — scan non autenticata)* |
+| Comment | `PAX Computer POS — UC-05 CVSS ≥ 7.0` |
 
-Click **Save**.
+> ⚠️ **`Consider Alive` è obbligatorio per target con host espliciti.** Con altri metodi (ICMP, TCP-ACK, ARP) il container Docker non riesce ad eseguire i test di raggiungibilità a basso livello e la scan rimane bloccata allo 0%. Per le scan su subnet `/24` (LAN Baseline) il metodo ICMP funziona correttamente — il problema si manifesta solo con liste di host espliciti.
 
-### 7.3 Crea target — LAN completa (baseline)
-
-**Target 2 — LAN HomeSOC:**
+### 7.2 Target — LAN completa
 
 | Campo | Valore |
 |---|---|
 | Name | `HomeSOC LAN — Baseline Scan` |
 | Hosts | `192.168.68.0/24` |
-| Exclude hosts | `192.168.68.203` *(escludere se stessa — ct-102)* |
+| Exclude hosts | `192.168.68.203` |
 | Port list | `All IANA assigned TCP` |
 | Alive test | `ICMP, TCP-ACK Service & ARP Ping` |
-| Comment | `Scan LAN completa — baseline mensile` |
 
-Click **Save**.
-
-### 7.4 Crea target — Asset critici
-
-**Target 3 — Asset critici HomeSOC:**
+### 7.3 Target — Asset critici
 
 | Campo | Valore |
 |---|---|
 | Name | `HomeSOC Asset Critici` |
 | Hosts | `192.168.68.90,192.168.68.108,192.168.68.200` |
 | Port list | `All IANA assigned TCP and UDP` |
-| Alive test | `ICMP, TCP-ACK Service & ARP Ping` |
-| Comment | `NAS-01, MacBook END-05, SOC-01 — scan settimanale` |
-
-### 7.5 Crea scan configuration (policy)
-
-**Web UI:** `Configuration` → `Scan Configs` → `+ New Scan Config`
-
-Per la scan UC-05 usare la configurazione **Full and fast** (già presente come built-in):
-- Cerca "Full and fast" nella lista
-- È la policy bilanciata tra completezza e velocità — adatta per scan periodiche su rete domestica
-
-Per la scan di baseline LAN usare **Discovery** (built-in):
-- Meno invasiva, ideale per mappare l'inventario
+| Alive test | `Consider Alive` |
 
 ---
 
 ## 8. Prima scan — UC-05 Negozio e LAN completa
 
-### 8.1 Crea task UC-05 — POS Negozio
+### 8.1 Crea task UC-05
 
 **Web UI:** `Scans` → `Tasks` → `+ New Task`
 
@@ -725,16 +554,9 @@ Per la scan di baseline LAN usare **Discovery** (built-in):
 | Scan Targets | `UC-05 — POS Negozio (NEG-01, NEG-02)` |
 | Scanner | `OpenVAS Default` |
 | Scan Config | `Full and fast` |
-| Order for target hosts | `Sequential` |
-| Network Source Interface | *(lasciare default)* |
-| Auto Delete Reports | `Keep all reports` |
-| Comment | `ATT&CK T1190 — Initial Access — CVSS ≥ 7.0 → TheHive (Fase 4)` |
-
-Click **Save**.
+| Comment | `ATT&CK T1190 — CVSS ≥ 7.0 → TheHive (Fase 4)` |
 
 ### 8.2 Crea task LAN Baseline
-
-**Web UI:** `Scans` → `Tasks` → `+ New Task`
 
 | Campo | Valore |
 |---|---|
@@ -742,302 +564,118 @@ Click **Save**.
 | Scan Targets | `HomeSOC LAN — Baseline Scan` |
 | Scanner | `OpenVAS Default` |
 | Scan Config | `Full and fast` |
-| Comment | `Scan di baseline mensile — 192.168.68.0/24` |
 
-Click **Save**.
+### 8.3 Avvio e monitoraggio
 
-### 8.3 Avvio manuale prima scan UC-05
-
-**Web UI:** `Scans` → `Tasks` → selezionare `UC-05 — Vulnerability Scan POS Negozio` → click **▶ Start** (icona play verde).
-
-La scan avanza attraverso le seguenti fasi:
-1. **Queued** — in attesa di esecuzione
-2. **Running: Host discovery** — ping sweep per verificare host attivi
-3. **Running: Port scan** — scansione porte aperte
-4. **Running: NVT tests** — esecuzione dei Network Vulnerability Tests
-5. **Done** — scan completata, report disponibile
+**Web UI:** `Scans` → `Tasks` → task desiderato → click **▶ Start**
 
 ```bash
-# Monitoraggio progressione da CLI (alternativa)
-docker exec -it greenbone-gvmd-1 \
-  gvmd --get-tasks 2>/dev/null | head -20
+# Dentro ct-102 — monitora la scan in corso
+docker compose -f /opt/greenbone/docker-compose.yml logs -f openvas ospd-openvas 2>&1 | grep -v DEBUG
 ```
 
-> ℹ️ La durata della prima scan "Full and fast" su 2 host (NEG-01, NEG-02) è tipicamente **15-45 minuti** a seconda dei servizi esposti. La scan LAN completa (254 host) richiede invece **2-6 ore**.
-
-### 8.4 Monitoraggio scan in corso
-
-**Web UI:** `Scans` → `Tasks` — la colonna **Status** mostra la percentuale di avanzamento.
-
-Oppure via log Docker:
-
-```bash
-# Log del processo di scan
-docker compose -f /opt/greenbone/docker-compose.yml \
-  logs -f greenbone-openvas-1 | grep -i "host\|progress\|finish"
+Indicatori che la scan sta girando correttamente:
+```
+Vulnerability scan ... started: Target has 2 hosts: 192.168.68.64, 192.168.68.67
+Vulnerability scan ... started for host: 192.168.68.67
+Vulnerability scan ... started for host: 192.168.68.64
 ```
 
-### 8.5 Verifica risultati
+> ℹ️ La percentuale nella Web UI può rimanere a 0% per diversi minuti anche con la scan in corso — OpenVAS aggiorna il progresso solo quando arrivano i primi risultati dai NVT, non durante il port scan iniziale. Verificare i log per confermare che lo scanner stia lavorando.
 
-Al completamento della scan:
+> ⏱️ Durata attesa: **15-45 minuti** per 2 host (Full and fast). La LAN Baseline su /24 richiede **2-4 ore**.
 
-**Web UI:** `Scans` → `Reports` → click sul report più recente
+### 8.4 Download report
 
-Navigare in **Results** — verificare:
-- **High** (CVSS 7.0–8.9) e **Critical** (CVSS 9.0–10.0): richiedono attenzione immediata (UC-05)
-- **Medium** (CVSS 4.0–6.9): da pianificare nel backlog
-- **Low / Log**: informativi
+Al completamento (status **Done**):
 
-```bash
-# Verifica risultati da CLI — conteggio per severità
-docker exec -it greenbone-gvmd-1 \
-  gvmd --get-results | grep -c "severity"
-```
+**Web UI:** `Scans` → `Reports` → click sul report → icona **↓** → scegliere formato
+
+Il file si scarica direttamente sul MacBook tramite il browser — nessun `rsync` necessario.
+
+Salvare:
+- `lab-reports/greenbone/UC-05_negozio_YYYYMMDD.pdf`
+- `lab-reports/greenbone/UC-05_negozio_YYYYMMDD.xml` (per import TheHive Fase 4)
+- `lab-reports/greenbone/baseline_LAN_YYYYMMDD.pdf`
 
 ---
 
 ## 9. Schedulazione scansioni settimanali
 
-### 9.1 Crea schedule in GSA
+### 9.1 Schedule UC-05 domenicale
 
 **Web UI:** `Configuration` → `Schedules` → `+ New Schedule`
-
-**Schedule 1 — UC-05 Settimanale:**
 
 | Campo | Valore |
 |---|---|
 | Name | `UC-05 Weekly Sunday 02:00` |
 | Timezone | `Europe/Rome` |
-| First Time | `Prossima domenica, 02:00` |
+| First Time | Prossima domenica, 02:00 |
 | Period | `1 week` |
-| Duration | `4 hours` *(scan si interrompe se dura più di 4h)* |
+| Duration | `4 hours` |
 
-**Schedule 2 — Baseline Mensile:**
+Associare: `Scans` → `Tasks` → `UC-05` → **Edit** → Schedule: `UC-05 Weekly Sunday 02:00`
+
+### 9.2 Schedule baseline mensile
 
 | Campo | Valore |
 |---|---|
 | Name | `LAN Baseline Monthly 03:00` |
 | Timezone | `Europe/Rome` |
-| First Time | `Primo giorno del mese prossimo, 03:00` |
+| First Time | Primo del mese prossimo, 03:00 |
 | Period | `1 month` |
 | Duration | `8 hours` |
-
-### 9.2 Associa schedule ai task
-
-**Web UI:** `Scans` → `Tasks` → selezionare `UC-05 — Vulnerability Scan POS Negozio` → **Edit**:
-
-| Campo | Valore |
-|---|---|
-| Schedule | `UC-05 Weekly Sunday 02:00` |
-| Schedule Once | ❌ (scan ricorrente) |
-
-Ripetere per il task **HomeSOC LAN Baseline Scan** con la schedule mensile.
-
-### 9.3 Verifica schedule da CLI
-
-```bash
-# Lista schedule configurati
-docker exec -it greenbone-gvmd-1 gvmd --get-schedules
-
-# Lista task con schedule associato
-docker exec -it greenbone-gvmd-1 gvmd --get-tasks
-```
 
 ---
 
 ## 10. Esportazione report e integrazione SOC
 
-### 10.1 Export report manuale via Web UI
-
-**Web UI:** `Scans` → `Reports` → selezionare il report → **Download** (icona ↓)
-
-Formati disponibili:
-- **PDF** — per documentazione portfolio e comunicazione
-- **XML** — per import in strumenti SIEM/SOAR (Fase 4: TheHive + Cortex)
-- **CSV** — per analisi in spreadsheet
-
-Salvare i report nella struttura:
-```
-/opt/homesoc/lab-reports/greenbone/
-├── pdf/
-│   └── UC-05_negozio_YYYYMMDD.pdf
-├── xml/
-│   └── UC-05_negozio_YYYYMMDD.xml
-└── csv/
-    └── UC-05_negozio_YYYYMMDD.csv
-```
-
-### 10.2 Script di export automatico post-scan
-
-```bash
-cat > /opt/homesoc/scripts/greenbone-export-report.sh << 'SCRIPT'
-#!/bin/bash
-# greenbone-export-report.sh
-# Esporta l'ultimo report Greenbone in PDF e XML
-# Uso: ./greenbone-export-report.sh [nome-prefisso]
-#
-# Prerequisito: gvm-cli installato
-# pip3 install gvm-tools
-
-set -euo pipefail
-
-PREFIX="${1:-report}"
-DATE=$(date +%Y%m%d_%H%M)
-OUTDIR="/opt/homesoc/lab-reports/greenbone"
-GVM_HOST="localhost"
-GVM_PORT="9390"
-ADMIN_PASSWORD="$(grep GVMD_ADMIN_PASSWORD /opt/greenbone/.env | cut -d= -f2)"
-
-echo "[*] Connecting to GVM daemon..."
-
-# Recupera l'ID dell'ultimo report
-LAST_REPORT_ID=$(docker exec greenbone-gvmd-1 \
-  gvmd --get-reports --sort-field=date --sort-reverse 2>/dev/null | \
-  awk 'NR==1 {print $1}')
-
-if [ -z "$LAST_REPORT_ID" ]; then
-  echo "[!] Nessun report trovato"
-  exit 1
-fi
-
-echo "[*] Last report ID: $LAST_REPORT_ID"
-
-# Export PDF
-echo "[*] Exporting PDF..."
-docker exec greenbone-gvmd-1 \
-  gvmd --get-report "$LAST_REPORT_ID" --format PDF \
-  > "${OUTDIR}/pdf/${PREFIX}_${DATE}.pdf" 2>/dev/null
-
-# Export XML
-echo "[*] Exporting XML..."
-docker exec greenbone-gvmd-1 \
-  gvmd --get-report "$LAST_REPORT_ID" --format XML \
-  > "${OUTDIR}/xml/${PREFIX}_${DATE}.xml" 2>/dev/null
-
-echo "[+] Report esportato:"
-echo "    PDF: ${OUTDIR}/pdf/${PREFIX}_${DATE}.pdf"
-echo "    XML: ${OUTDIR}/xml/${PREFIX}_${DATE}.xml"
-
-# Log per audit trail
-echo "$(date -Iseconds) | EXPORT | $LAST_REPORT_ID | $PREFIX" \
-  >> /opt/homesoc/lab-reports/greenbone/export-audit.log
-SCRIPT
-
-chmod +x /opt/homesoc/scripts/greenbone-export-report.sh
-```
-
-### 10.3 Cron job per export automatico post-scan domenicale
-
-```bash
-# Aggiunge cron job: ogni domenica alle 06:00 (dopo la scan delle 02:00)
-# L'ora tiene conto della durata massima della scan (4h) + buffer 30min
-(crontab -l 2>/dev/null; echo "0 6 * * 0 /opt/homesoc/scripts/greenbone-export-report.sh UC-05-negozio >> /var/log/greenbone-export.log 2>&1") | crontab -
-
-# Verifica cron
-crontab -l
-```
-
-### 10.4 Struttura report nel repository Git
-
-Per il portfolio, i report vanno versionati nella cartella `lab-reports/`:
+### 10.1 Struttura report nel repository
 
 ```
 homesoc-project/
 └── lab-reports/
     └── greenbone/
-        ├── UC-05_negozio_20260413.pdf    ← prima scan
-        ├── UC-05_negozio_20260413.xml    ← per import Fase 4
-        └── baseline_LAN_20260501.pdf     ← baseline mensile
+        ├── UC-05_negozio_YYYYMMDD.pdf
+        ├── UC-05_negozio_YYYYMMDD.xml
+        └── baseline_LAN_YYYYMMDD.pdf
 ```
 
 ```bash
-# Dal MacBook — copia i report via rsync (dopo aver completato la scan)
-rsync -avz -e "ssh -p 2222" \
-  root@192.168.68.203:/opt/homesoc/lab-reports/greenbone/ \
-  ~/homesoc-project/lab-reports/greenbone/
-
-# Commit nel repository
+# Dal MacBook
 cd ~/homesoc-project
 git add lab-reports/greenbone/
-git commit -m "lab-reports(greenbone): UC-05 first scan $(date +%Y%m%d)"
+git commit -m "lab-reports(greenbone): baseline LAN e UC-05 first scan $(date +%Y%m%d)"
 ```
 
-### 10.5 Integrazione futura con Wazuh (Fase 3) e TheHive (Fase 4)
+### 10.2 Integrazione futura (Fase 3-4)
 
-> ℹ️ Queste integrazioni saranno completate nelle fasi successive. I passi seguenti documentano il design per riferimento.
+**Fase 3 — Wazuh:** script Python che legge il report XML e genera alert per ogni finding CVSS ≥ 7.0 → regola Wazuh custom (Rule ID 100050+).
 
-**Fase 3 — Import report Greenbone in Wazuh:**
-- Script Python che legge il report XML e genera alert Wazuh per ogni finding CVSS ≥ 7.0
-- Alert mappato su regola Wazuh custom (Rule ID 100050+)
-- Configurazione: `configs/wazuh/greenbone-integration.py`
-
-**Fase 4 — Ticket automatico TheHive:**
-- Cortex analyzer `GreenBone_Vuln` legge il report XML
-- Ogni finding CVSS ≥ 7.0 su NEG-01/NEG-02 crea un caso TheHive
-- Playbook: `playbooks/UC-05-vuln-critica-negozio.md`
+**Fase 4 — TheHive:** ogni finding CVSS ≥ 7.0 su NEG-01/NEG-02 crea automaticamente un caso TheHive tramite Cortex analyzer `GreenBone_Vuln`.
 
 ---
 
 ## 11. Backup snapshot
 
-### 11.1 Snapshot Proxmox pre-scan (stato baseline)
+### 11.1 Snapshot Proxmox
 
 ```bash
-# Da SOC-01 — prima di avviare qualsiasi scan significativa
+# Su SOC-01
 pct snapshot 102 "greenbone-configured" \
-  --description "GCE v22.4 configurato — feed sincronizzato — target UC-05 pronti — Aprile 2026"
+  --description "GCE configurato — feed sync — target UC-05 pronti — Aprile 2026"
 
-# Verifica snapshot creato
 pct listsnapshot 102
 ```
 
-Output atteso:
-```
-             PARENT             SNAPNAME             TIME      DESCRIPTION
-                                    current
-                               greenbone-configured  XXXXXX  GCE v22.4 configurato ...
-```
-
-### 11.2 Backup dati Greenbone (volumi Docker)
-
-I dati di Greenbone (report, configurazioni, feed NVT) sono salvati in volumi Docker. Prima di qualsiasi manutenzione:
+### 11.2 Verifica inclusione backup vzdump
 
 ```bash
-# Lista volumi Docker GCE
-docker volume ls | grep greenbone
-
-# Backup volumi su storage locale
-cd /opt/greenbone
-docker compose -f docker-compose.yml stop
-
-# Esegui backup dei volumi
-mkdir -p /opt/homesoc/backups/greenbone-volumes
-for vol in $(docker volume ls -q | grep greenbone); do
-  echo "Backing up volume: $vol"
-  docker run --rm \
-    -v "${vol}:/source:ro" \
-    -v "/opt/homesoc/backups/greenbone-volumes:/backup" \
-    debian:12 \
-    tar czf "/backup/${vol}_$(date +%Y%m%d).tar.gz" -C /source .
-done
-
-# Riavvia Greenbone
-docker compose -f docker-compose.yml up -d
-
-echo "[+] Backup volumi completato in /opt/homesoc/backups/greenbone-volumes/"
-ls -lh /opt/homesoc/backups/greenbone-volumes/
-```
-
-### 11.3 Verifica inclusione ct-102 nel backup vzdump
-
-```bash
-# Da SOC-01 — verifica che ct-102 sia nel job di backup schedulato
+# Su SOC-01
 cat /etc/pve/jobs.cfg | grep -A 20 "vzdump"
 ```
 
-Se ct-102 non è inclusa, aggiungere manualmente:
-
-**Web UI Proxmox:** `Datacenter` → `Backup` → selezionare il job esistente → **Edit** → selezionare `ct-102` nella lista VM/CT.
+Se ct-102 non è inclusa: **Web UI Proxmox** → `Datacenter` → `Backup` → job esistente → **Edit** → aggiungere ct-102.
 
 ---
 
@@ -1047,224 +685,185 @@ Se ct-102 non è inclusa, aggiungere manualmente:
 
 **Container Proxmox:**
 - [ ] CT `ct-102-greenbone` creata con ID 102
-- [ ] Container **privilegiato** (`Unprivileged: No`) — verificare in `pct config 102`
-- [ ] Features `nesting=1,keyctl=1` abilitate — verificare in `pct config 102 | grep features`
-- [ ] 4 vCPU, 4096 MB RAM, 32 GB disco su `local-lvm` — verificare in `pct config 102`
-- [ ] CT nel pool `phase2`
-- [ ] `onboot: 1` nella configurazione CT
+- [ ] Container **privilegiato** — `pct config 102 | grep unprivileged` → `0`
+- [ ] Features `nesting=1,keyctl=1` — `pct config 102 | grep features`
+- [ ] 4 vCPU, 4096 MB RAM, **50 GB** disco — `pct config 102 | grep rootfs`
+- [ ] CT nel pool `phase2`, `onboot: 1`
 
 **Rete:**
 - [ ] MAC address ct-102 annotato in `Inventario_IP_Pulito.csv`
 - [ ] DHCP reservation `192.168.68.203` creata su Deco BE65
-- [ ] IP `192.168.68.203` assegnato e stabile — verificare con `ping 192.168.68.203`
+- [ ] `ping 192.168.68.203` → OK da SOC-01
 - [ ] Web UI GSA raggiungibile su `http://192.168.68.203:9392`
 
 **Docker e Greenbone:**
-- [ ] Docker Engine installato e attivo (`systemctl is-active docker`)
-- [ ] `docker compose up -d` completato senza errori
-- [ ] Tutti i container GCE in stato `Up` (`docker compose ps`)
-- [ ] Feed NVT sincronizzati (`Administration` → `Feed Status` → tutti `Current`)
-- [ ] Login GSA funzionante con utente `admin`
+- [ ] `docker run hello-world` → OK
+- [ ] Patch compose applicate (GSA slim, localhost, cap_add, redis socket)
+- [ ] Tutti i container principali GCE in stato `Up`
+- [ ] Feed tutti **Current** (Web UI → Administration → Feed Status)
 - [ ] Servizio `greenbone-community.service` abilitato all'avvio
 
 **Target e scan:**
-- [ ] Target `UC-05 — POS Negozio (NEG-01, NEG-02)` configurato
-- [ ] Target `HomeSOC LAN — Baseline Scan` configurato
-- [ ] Task `UC-05 — Vulnerability Scan POS Negozio` creata
-- [ ] Task `HomeSOC LAN Baseline Scan` creata
-- [ ] Prima scan UC-05 completata con successo
-- [ ] Report disponibile in `Scans` → `Reports`
-- [ ] Report PDF esportato in `/opt/homesoc/lab-reports/greenbone/pdf/`
+- [ ] Target UC-05 con `Alive Test: Consider Alive`
+- [ ] Target LAN Baseline configurato
+- [ ] Prima scan UC-05 completata — report disponibile
+- [ ] Prima scan LAN Baseline completata — report disponibile
+- [ ] Report PDF e XML scaricati e committati su Git
 
 **Schedulazione:**
-- [ ] Schedule `UC-05 Weekly Sunday 02:00` creata
-- [ ] Schedule `LAN Baseline Monthly 03:00` creata
-- [ ] Schedule associata al task UC-05
-- [ ] Cron export domenicale configurato
+- [ ] Schedule domenicale 02:00 associata al task UC-05
+- [ ] Schedule mensile 03:00 associata al task LAN Baseline
 
 **Backup:**
-- [ ] Snapshot Proxmox `greenbone-configured` creato
-- [ ] ct-102 inclusa nel job backup vzdump schedulato
+- [ ] Snapshot `greenbone-configured` creato
+- [ ] ct-102 inclusa nel job vzdump schedulato
 
 ### 12.2 Comandi diagnostici di riepilogo
 
 ```bash
-# Da SOC-01
+# Su SOC-01
 echo "=== CT Status ===" && pct status 102
-echo "=== CT Config (features) ===" && pct config 102 | grep -E "features|cores|memory|rootfs"
-echo "=== Network Ping Greenbone ===" && ping -c 3 192.168.68.203
-echo "=== Port 9392 Check ===" && nc -zv 192.168.68.203 9392 && echo "OPEN" || echo "CLOSED"
-echo "=== CT Snapshots ===" && pct listsnapshot 102
-echo "=== Storage ===" && pvesm status
+echo "=== CT Config ===" && pct config 102 | grep -E "features|unprivileged|cores|memory|rootfs"
+echo "=== Ping ===" && ping -c 2 192.168.68.203 | tail -1
+echo "=== Port 9392 ===" && nc -zv 192.168.68.203 9392 2>&1 | grep -o "succeeded\|refused"
+echo "=== Snapshots ===" && pct listsnapshot 102
 
-# Da ct-102
-echo "=== Docker Status ===" && docker info --format '{{.ServerVersion}}'
-echo "=== GCE Containers ===" && docker compose -f /opt/greenbone/docker-compose.yml ps
-echo "=== Disk Usage ===" && df -h /opt
-echo "=== Feed Status ===" && docker exec greenbone-gvmd-1 gvmd --get-feeds 2>/dev/null | head -20
-echo "=== Report Count ===" && docker exec greenbone-gvmd-1 gvmd --get-reports 2>/dev/null | wc -l
-```
-
-Output atteso:
-```
-=== CT Status ===
-status: running
-=== Port 9392 Check ===
-Connection to 192.168.68.203 9392 port [tcp/*] succeeded!
-OPEN
-=== GCE Containers ===
-NAME                    STATUS
-greenbone-gvmd-1        Up X hours
-greenbone-gsad-1        Up X hours
-[...]
+# Dentro ct-102
+echo "=== Docker ===" && docker info --format '{{.ServerVersion}}'
+echo "=== GCE Up ===" && docker compose -f /opt/greenbone/docker-compose.yml ps \
+  --format "table {{.Name}}\t{{.Status}}" | grep "Up"
+echo "=== Patch check ===" && grep -c "NET_RAW\|redis_socket" /opt/greenbone/docker-compose.yml
+echo "=== Disk ===" && df -h / | tail -1
 ```
 
 ---
 
 ## 13. Troubleshooting
 
-### Docker non si avvia nel container LXC — errori namespace
+### Docker non si avvia — errori namespace o permission denied
 
-**Sintomi:** `docker run hello-world` fallisce con errori tipo `failed to create new user namespace` o `operation not permitted`.
-
-**Causa:** Container LXC non privilegiato, o features `nesting`/`keyctl` mancanti.
+**Causa:** container non privilegiato o features mancanti.
 
 ```bash
-# Da SOC-01 — verifica configurazione
+# Su SOC-01
 pct config 102 | grep -E "unprivileged|features"
+# unprivileged deve essere 0, features deve contenere nesting=1,keyctl=1
 
-# Se "unprivileged: 1" → il container è non privilegiato → impossibile da correggere senza ricreare
-# Se features mancanti → aggiungere a container spento
+# Features mancanti (correggibile a container spento)
 pct stop 102
 pct set 102 --features nesting=1,keyctl=1
 pct start 102
 
-# Se il container è non privilegiato, deve essere ricreato con la flag corretta
-# (vedi passo 2.2 — deselezionare "Unprivileged container")
+# Se unprivileged è 1 → ricreare il container (non correggibile a caldo)
 ```
 
-### Container GCE in stato "Restarting" o "Exit"
+### Errore 400 "no such template" durante pct create
+
+**Causa:** la versione del template è stata rimossa da Proxmox.
 
 ```bash
-# Visualizza log del container problematico
-docker compose -f /opt/greenbone/docker-compose.yml logs greenbone-gvmd-1
+# Su SOC-01
+pveam update
+pveam available | grep debian-12-standard
+# Usare il nome esatto che compare nell'output
+```
 
-# Causa comune 1: RAM insufficiente
-free -h
-# Se RAM < 4 GB → aumentare la RAM del CT dal Proxmox (pct set 102 --memory 4096)
+### Errore 403 "pool does not exist" durante pct create
 
-# Causa comune 2: disco pieno
-df -h /opt
-# Se >90% → liberare spazio o aumentare il disco del CT
+```bash
+# Su SOC-01
+pvesh create /pools -poolid phase2
+# poi ripetere pct create
+```
 
-# Causa comune 3: volume Docker corrotto → ricreare
+### Errore 404 durante il download del docker-compose
+
+**Causa:** il file ha cambiato nome nelle versioni recenti.
+
+```bash
+# Dentro ct-102
+curl -fO -L https://greenbone.github.io/docs/latest/_static/compose.yaml
+mv compose.yaml docker-compose.yml
+```
+
+### Disco pieno durante la sincronizzazione feed (crash gvmd)
+
+**Causa:** 32 GB non sono sufficienti per i feed SCAP/CPE attuali.
+
+```bash
+# Su SOC-01
+pct stop 102
+pct resize 102 rootfs +18G
+pct start 102
+
+# Dentro ct-102 — verifica nuovo spazio
+df -h /
+```
+
+### Web UI non raggiungibile — Connection refused su porta 9392
+
+**Causa probabile:** patch del binding `127.0.0.1` non applicata.
+
+```bash
+# Dentro ct-102
+grep "127.0.0.1" /opt/greenbone/docker-compose.yml
+# Se trova righe → applicare la patch:
+sed -i 's/127.0.0.1://g' /opt/greenbone/docker-compose.yml
+docker compose -f /opt/greenbone/docker-compose.yml up -d --force-recreate
+```
+
+### Scan bloccata a 0% — errore "got NULL host" nei log
+
+**Causa:** patch al blocco `openvas` non applicate.
+
+```bash
+# Dentro ct-102 — verifica che le patch siano presenti
+grep -E "NET_RAW|redis_socket_vol" /opt/greenbone/docker-compose.yml
+# Deve trovare almeno 2 righe
+
+# Se mancano → applicare le patch del passo 5.2 e ricreare il container openvas
+docker compose -f /opt/greenbone/docker-compose.yml up -d --force-recreate openvas
+```
+
+Se le patch sono presenti ma la scan è ancora bloccata, il task ha probabilmente uno stato corrotto da tentativi precedenti falliti. Soluzione: dalla Web UI eliminare il task e ricrearlo da zero con gli stessi parametri — il problema non si ripresenta su task nuovi.
+
+### Feed Status mostra "Outdated" o "Update in progress"
+
+```bash
+# Dentro ct-102 — monitora i log e attendi
+docker compose -f /opt/greenbone/docker-compose.yml logs -f openvas ospd-openvas
+
+# Attendere 45-90 minuti al primo avvio
+# NON usare gvmd --get-feeds o --rebuild-scap: rimossi nelle versioni recenti
+# Unico indicatore affidabile: Web UI → Administration → Feed Status
+```
+
+### Comandi pct / pveam "command not found" dentro ct-102
+
+**Causa:** questi comandi esistono solo su SOC-01, non dentro il container LXC.
+
+```bash
+# Per leggere il MAC dall'interno del container:
+ip link show eth0 | grep "link/ether"
+
+# Per riavviare la rete dall'interno del container:
+systemctl restart networking
+```
+
+### Container GCE in Restarting o Exit (codice non zero)
+
+```bash
+# Dentro ct-102
+docker compose -f /opt/greenbone/docker-compose.yml logs <nome-servizio>
+
+# RAM insufficiente → aumentare da SOC-01
+pct set 102 --memory 6144
+
+# Disco pieno → vedi sezione dedicata sopra
+
+# ⚠️ Solo in caso estremo — ricrea volumi (perde i report esistenti)
 docker compose -f /opt/greenbone/docker-compose.yml down -v
 docker compose -f /opt/greenbone/docker-compose.yml up -d
-# ⚠️ ATTENZIONE: "down -v" cancella i volumi inclusi i report → fare backup prima
-```
-
-### GSA non raggiungibile sulla porta 9392
-
-```bash
-# Verifica che il container gsad sia in running
-docker compose -f /opt/greenbone/docker-compose.yml ps | grep gsad
-
-# Verifica porta in ascolto nel container
-docker exec greenbone-gsad-1 ss -tlnp | grep 9392
-
-# Verifica porta nel CT
-ss -tlnp | grep 9392
-
-# Se la porta non è esposta — verifica il docker-compose.yml
-grep "9392" /opt/greenbone/docker-compose.yml
-
-# Ricrea il servizio gsad
-docker compose -f /opt/greenbone/docker-compose.yml restart greenbone-gsad-1
-```
-
-### Feed NVT non aggiornati — Feed Status "Outdated"
-
-```bash
-# Forza aggiornamento feed manuale
-docker compose -f /opt/greenbone/docker-compose.yml \
-  exec greenbone-gvmd-1 greenbone-feed-sync
-
-# Monitora aggiornamento
-docker compose -f /opt/greenbone/docker-compose.yml \
-  logs -f greenbone-openvas-1 | grep -i "sync\|NVT\|feed"
-
-# Il processo può richiedere 20-60 minuti
-# Verificare completamento con:
-docker exec greenbone-gvmd-1 gvmd --get-feeds
-```
-
-### Scan bloccata — status "Running" per ore senza progresso
-
-```bash
-# Verifica che OpenVAS scanner sia attivo
-docker compose -f /opt/greenbone/docker-compose.yml ps greenbone-openvas-1
-
-# Verifica log scanner per errori
-docker compose -f /opt/greenbone/docker-compose.yml \
-  logs --tail=100 greenbone-openvas-1
-
-# Se necessario, cancella il task dalla Web UI e riavvia
-# Oppure via CLI:
-docker exec greenbone-gvmd-1 \
-  gvmd --get-tasks | head -5
-# Annotare il TASK_ID e:
-docker exec greenbone-gvmd-1 \
-  gvmd --stop-task="<TASK_ID>"
-```
-
-### Errore "Login failed" sulla Web UI GSA
-
-```bash
-# Reset password admin
-docker exec -it greenbone-gvmd-1 \
-  gvmd --user=admin --new-password="NuovaPasswordSicura"
-
-# Se l'utente admin non esiste, crearlo
-docker exec -it greenbone-gvmd-1 \
-  gvmd --create-user=admin --password="NuovaPasswordSicura"
-
-# Verifica utenti esistenti
-docker exec -it greenbone-gvmd-1 \
-  gvmd --get-users
-```
-
-### Scan non raggiunge i target — host risultano "down"
-
-```bash
-# Verifica connettività da ct-102 ai target
-ping -c 3 192.168.68.64    # NEG-01
-ping -c 3 192.168.68.67    # NEG-02
-
-# Verifica routing
-ip route show
-
-# Verifica che il container Docker abbia accesso alla LAN
-docker exec greenbone-openvas-1 ping -c 3 192.168.68.1
-
-# Se i device IoT/POS hanno firewall che bloccano il ping
-# provare "Alive Test: Consider Alive" nel target — NON usa ICMP
-```
-
-### Disco pieno — volumi Docker crescono troppo
-
-```bash
-# Verifica spazio usato dai volumi Docker
-docker system df
-
-# Rimuovi immagini e container non usati (NON rimuove i volumi dati)
-docker system prune -f
-
-# Se i volumi dati dei report crescono troppo
-# Esporta i report vecchi e rimuovili dalla UI Greenbone
-# Web UI: Scans → Reports → seleziona report vecchi → Delete
-
-# Verifica spazio disco CT
-df -h
 ```
 
 ---
@@ -1276,29 +875,28 @@ Dopo aver completato e verificato questa checklist:
 1. Commit su Git:
    ```bash
    git add runbooks/greenbone-deploy.md
-   git commit -m "runbooks(greenbone): add Phase 2 deploy runbook v1.0"
+   git commit -m "runbooks(greenbone): Phase 2 deploy runbook v1.1 — post-deployment fixes"
    ```
 
-2. Aggiornare `docs/Inventario_IP_Pulito.csv` con:
+2. Aggiornare `docs/Inventario_IP_Pulito.csv`:
    - IP: `192.168.68.203`
-   - MAC: *(valore letto da `pct exec 102 -- ip link show eth0 | grep link/ether`)*
+   - MAC: *(letto con `ip link show eth0 | grep link/ether` dentro ct-102)*
    - Hostname: `ct-102-greenbone`
    - Servizio: `Greenbone GCE 9392/tcp`
 
-3. Aggiungere il primo report PDF al repository:
+3. Committare i report della prima scan:
    ```bash
    git add lab-reports/greenbone/
-   git commit -m "lab-reports(greenbone): UC-05 first scan results $(date +%Y%m%d)"
+   git commit -m "lab-reports(greenbone): baseline LAN e UC-05 first scan $(date +%Y%m%d)"
    ```
 
 4. Procedere con il runbook successivo: **`runbooks/uptimekuma-deploy.md`**
-   - Crea ct-101 su Proxmox (2 vCPU, 1 GB RAM, 16 GB, vmbr0)
-   - Installa Uptime Kuma + Portainer in container LXC Debian 12
-   - Configura probe ICMP/HTTP su tutti gli asset della rete (`192.168.68.0/24`)
-   - Include probe su ct-102 Greenbone (`http://192.168.68.203:9392`)
+   - Crea ct-101 (2 vCPU, 1 GB RAM, 16 GB, vmbr0)
+   - Installa Uptime Kuma + Portainer
+   - Configura probe su tutti gli asset incluso ct-102 (`http://192.168.68.203:9392`)
    - Configura webhook verso HAOS (`192.168.68.201:8123/api/webhook/uptimekuma-homesoc-alert`)
 
 ---
 
-*File: `runbooks/greenbone-deploy.md` · v1.0 · Aprile 2026*  
+*File: `runbooks/greenbone-deploy.md` · v1.1 · Aprile 2026*  
 *HomeSOC Project — Alessandro · LM Sicurezza Informatica · UniMI*
