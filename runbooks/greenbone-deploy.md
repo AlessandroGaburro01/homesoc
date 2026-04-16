@@ -85,8 +85,8 @@ pvesh get /pools/phase2
 | IP ct-102 | `192.168.68.203` (DHCP reservation) |
 | Gateway | `192.168.68.1` (Deco BE65) |
 | DNS | `192.168.68.1` |
-| Porta GSA (Web UI) | `9392/tcp` |
-| Accesso Web UI | `http://192.168.68.203:9392` |
+| Porta GSA (Web UI) | `9392/tcp` (HTTP) · `443/tcp` (HTTPS) |
+| Accesso Web UI | `http://192.168.68.203:9392` oppure `https://192.168.68.203` |
 
 ### 1.4 Creazione pool phase2 (se non presente)
 
