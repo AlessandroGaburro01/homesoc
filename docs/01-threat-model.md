@@ -1,6 +1,6 @@
 # 01 — Threat Model
 **Progetto:** HomeSOC · Domestic Security Operations Centre
-**Versione:** 1.2 — Aprile 2026
+**Versione:** 1.3 — Aprile 2026
 **Autore:** Alessandro · LM Sicurezza Informatica · UniMI
 **Framework:** STRIDE (Spoofing, Tampering, Repudiation, Information Disclosure, Denial of Service, Elevation of Privilege)
 
@@ -11,6 +11,7 @@
 - v1.0 — Aprile 2026 — Prima stesura
 - v1.1 — Aprile 2026 — Correzione modelli Deco (XE75/XE75 Pro), termostati → Google Nest Learning 3a gen, NAS → WD My Cloud Home, aggiornamento R-06, aggiunta sezione CIA
 - v1.2 — Aprile 2026 — Correzione subnet (192.168.68.0/24), IP/MAC da scan CSV, identificazione ESP_EF1867 (luce smart sala), PAX Computer come hardware POS, Narwal FN-LINK, due Roborock distinti, aggiornamento stati risk register (R-06, R-11, R-15, R-16, R-17), NEG-03 identificato come POS mobile, note DoH Deco BE65
+- v1.3 — Aprile 2026 — Aggiornamento R-09, R-10 e sez. 2.9: risposta fail2ban → CrowdSec cs-firewall-bouncer (decisione architetturale Fase 3 — `runbooks/crowdsec-deploy.md`). R-09 e R-10 → stato Mitigato (runbook). UC-01 risposta prevista aggiornata.
 
 ---
 
@@ -248,7 +249,7 @@
 | Denial of Service | Server SOC irraggiungibile — perdita visibilità su tutta la rete | 1 | 3 | **MEDIO** |
 | Repudiation | Log Wazuh manomessi — eventi non più attendibili | 1 | 3 | **MEDIO** |
 
-**Controlli previsti:** SSH hardening (no root login, solo chiavi pubbliche), fail2ban, snapshot Proxmox automatici, accesso solo LAN, Tailscale per accesso remoto.
+**Controlli previsti:** SSH hardening (no root login, solo chiavi pubbliche), **CrowdSec cs-firewall-bouncer** (IPS — ban automatico brute force SSH + blocklist globale Hub), snapshot Proxmox automatici, accesso solo LAN, Tailscale per accesso remoto. *[Decisione v1.3: fail2ban sostituito da CrowdSec — vedi `runbooks/crowdsec-deploy.md`]*
 
 ### 2.10 DNS Resolver — NextDNS
 
@@ -279,8 +280,8 @@
 | R-06 | NAS-01 (WD My Cloud Home) | Information Disclosure — account WD compromesso | 2 | 3 | **ALTO (6)** | 2FA account WD, password robusta, monitoraggio Wazuh | Immediato | **Mitigato ✅ — 2FA abilitato 11/04/2026** |
 | R-07 | CAM-01→07 (Telecamere) | Information Disclosure — stream video verso cloud | 2 | 3 | **ALTO (6)** | Blocco internet telecamere (OPNsense futuro), firmware aggiornato | Futuro | Posticipato |
 | R-08 | END-05 (MacBook) | Information Disclosure — keylogger/screen capture | 2 | 3 | **ALTO (6)** | Wazuh agent, FIM, controllo processi | Fase 3 | Aperto |
-| R-09 | SOC-01 (Server HomeSOC) | Tampering — compromissione server monitoring | 1 | 3 | **MEDIO (3)** | SSH hardening, no root, fail2ban, snapshot Proxmox | Fase 2 | Aperto |
-| R-10 | SOC-01 (Server HomeSOC) | Elevation of Privilege — accesso SSH non autorizzato | 1 | 3 | **MEDIO (3)** | Chiavi pubbliche only, fail2ban | Fase 2 | Aperto |
+| R-09 | SOC-01 (Server HomeSOC) | Tampering — compromissione server monitoring | 1 | 3 | **MEDIO (3)** | SSH hardening, no root, CrowdSec IPS, snapshot Proxmox | Fase 3 | **Mitigato (runbook) ✅ — `crowdsec-deploy.md` + `wazuh-deploy.md`** |
+| R-10 | SOC-01 (Server HomeSOC) | Elevation of Privilege — accesso SSH non autorizzato | 1 | 3 | **MEDIO (3)** | Chiavi pubbliche only, CrowdSec cs-firewall-bouncer (ban automatico brute force — UC-01) | Fase 3 | **Mitigato (runbook) ✅ — `crowdsec-deploy.md`** |
 | R-11 | AUTO-04 (ESP_EF1867) | Spoofing / Info Disclosure — device non identificato | 2 | 2 | **MEDIO (4)** | Identificazione fisica MAC OUI, analisi traffico Wazuh | Immediato | **Chiuso — identificato: luce smart sala (Espressif/Tuya). Rischio residuo assimilato a Tuya cloud (cfr. R-01).** |
 | R-12 | IOT-01, IOT-02 (Robot cinesi) | Tampering — firmware OTA compromesso | 1 | 3 | **MEDIO (3)** | Blocco OTA automatici via DNS, monitoraggio | Fase 3 | Aperto |
 | R-13 | CAM-01→07 (Telecamere) | Tampering — firmware OTA compromesso | 1 | 3 | **MEDIO (3)** | Firmware aggiornato manualmente | Fase 3 | Aperto |
@@ -406,5 +407,5 @@ La triade **CIA** (Confidentiality · Integrity · Availability) è declinata pe
 
 ---
 
-*File: `docs/01-threat-model.md` · v1.2 · Aprile 2026*
+*File: `docs/01-threat-model.md` · v1.3 · Aprile 2026*
 *HomeSOC Project — Alessandro · LM Sicurezza Informatica · UniMI*

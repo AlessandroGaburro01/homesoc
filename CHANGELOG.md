@@ -7,6 +7,20 @@ Format: [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/)  
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-04-16
+
+### Added
+- `runbooks/wazuh-deploy.md` — Fase 3: deploy Wazuh 4.x single-node su vm-103 (Ubuntu 22.04, 4 vCPU / 6 GB / 64 GB, IP `192.168.68.204`). Comprende: Wazuh Manager + Indexer + Dashboard, enrollment agent macOS (END-05), FIM su home directory MacBook, ingestion log NextDNS via API, script rogue device detection, detection rules custom UC-01/02/03/04/06 mappate su MITRE ATT&CK.
+- `runbooks/crowdsec-deploy.md` — Fase 3: deploy CrowdSec direttamente su SOC-01 host Proxmox (`192.168.68.200`). Comprende: agent + cs-firewall-bouncer (nftables), collections ssh-bf/linux/syslog, blocklist Hub globale, pipeline CrowdSec → rsyslog → Wazuh syslog (alert rule 100050-100053), sezione didattica modello agent/LAPI/bouncer vs fail2ban.
+
+### Changed
+- `docs/01-threat-model.md` — Aggiornato a v1.3: R-09 e R-10 → stato Mitigato (runbook). Controlli fail2ban → CrowdSec cs-firewall-bouncer in sez. 2.9 e risk register. UC-01 risposta prevista aggiornata.
+
+### Notes
+- Fase 3 runbook completati. Deployment effettivo su hardware da eseguire (prerequisito: upgrade RAM SOC-01 a 32 GB per vm-103 Wazuh).
+- Criterio di chiusura Fase 3: test brute force SSH → alert rule 100051 visibile in Wazuh Dashboard.
+- Decisione architetturale: CrowdSec deployato su SOC-01 anche senza servizi internet-facing — protezione SSH LAN (UC-01) + blocklist globale Hub + preparazione per esposizione futura (reverse proxy, VPN). Rationale documentato in `crowdsec-deploy.md` sez. 1.3.
+
 ## [0.3.0] — 2026-04-11
 
 ### Changed
