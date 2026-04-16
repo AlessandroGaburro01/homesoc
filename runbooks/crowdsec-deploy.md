@@ -1,0 +1,1021 @@
+# Runbook — CrowdSec Deploy su SOC-01 (Host Proxmox)
+**Progetto:** HomeSOC · Domestic Security Operations Centre  
+**File:** `runbooks/crowdsec-deploy.md`  
+**Versione:** 1.0 — Aprile 2026  
+**Autore:** Alessandro · LM Sicurezza Informatica · UniMI  
+**Fase:** 3 — SIEM & Detection  
+**Prerequisito:** `runbooks/wazuh-deploy.md` completato — vm-103 operativa, Wazuh Manager attivo su `192.168.68.204`
+
+> **Scopo:** Installare e configurare CrowdSec direttamente sull'host Proxmox (SOC-01, `192.168.68.200`) come sistema di Intrusion Prevention collaborativo. CrowdSec protegge SSH su SOC-01, le dashboard di Wazuh e Proxmox Web UI, e invia gli alert di blocco a Wazuh via syslog per centralizzare la visibilità. Al termine di questo runbook SOC-01 deve bloccare automaticamente gli IP che tentano brute force SSH, la blocklist globale CrowdSec Hub deve essere attiva, e ogni decisione di blocco deve generare un alert in Wazuh Dashboard.
+
+> **Nota di deployment:** CrowdSec gira direttamente sull'**host Proxmox**, non in una VM o LXC dedicata. Questa scelta è intenzionale: il bouncer opera a livello iptables/nftables dell'host, dove può proteggere sia il servizio SSH del nodo stesso sia i servizi esposti attraverso le VM ospitate (Proxmox Web UI 8006, Wazuh Dashboard su vm-103).
+
+**Changelog:**
+- v1.0 — Aprile 2026 — Prima stesura
+
+---
+
+## Indice
+
+1. [Background — Modello CrowdSec vs Fail2ban](#1-background--modello-crowdsec-vs-fail2ban)
+2. [Prerequisiti](#2-prerequisiti)
+3. [Installazione CrowdSec Agent](#3-installazione-crowdsec-agent)
+4. [Configurazione Collections](#4-configurazione-collections)
+5. [Installazione cs-firewall-bouncer](#5-installazione-cs-firewall-bouncer)
+6. [Threat Intelligence — Blocklist Hub](#6-threat-intelligence--blocklist-hub)
+7. [Integrazione Wazuh — Pipeline CrowdSec → Syslog → Wazuh](#7-integrazione-wazuh--pipeline-crowdsec--syslog--wazuh)
+8. [Verifica end-to-end](#8-verifica-end-to-end)
+9. [Preparazione per esposizione futura](#9-preparazione-per-esposizione-futura)
+10. [Backup e persistenza della configurazione](#10-backup-e-persistenza-della-configurazione)
+11. [Verifica finale e checklist](#11-verifica-finale-e-checklist)
+12. [Troubleshooting](#12-troubleshooting)
+
+---
+
+## 1. Background — Modello CrowdSec vs Fail2ban
+
+> ℹ️ **Sezione didattica** — comprensione del modello prima della configurazione. Rilevante per il portfolio e per la presentazione del progetto.
+
+### 1.1 Architettura CrowdSec
+
+CrowdSec è composto da tre componenti distinti con responsabilità separate:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                        SOC-01                           │
+│                                                         │
+│  ┌─────────────┐    ┌──────────────┐    ┌───────────┐  │
+│  │   PARSER    │    │     LAPI     │    │  BOUNCER  │  │
+│  │  (scenario) │───▶│  (Local API) │───▶│ (iptables)│  │
+│  └─────────────┘    └──────────────┘    └───────────┘  │
+│        ▲                   │                            │
+│        │             decisions                          │
+│   log files          (ban/captcha)                      │
+│  /var/log/auth.log         │                            │
+│  /var/log/syslog           ▼                        │
+│                    ┌──────────────┐                     │
+│                    │  CrowdSec    │                     │
+│                    │    Hub       │◀── Threat Intel     │
+│                    │  (blocklist) │    globale          │
+│                    └──────────────┘                     │
+└─────────────────────────────────────────────────────────┘
+```
+
+| Componente | Ruolo | Analogia |
+|---|---|---|
+| **Agent** (crowdsec) | Legge i log, applica scenari, rileva comportamenti malevoli | Il "cervello" — capisce cosa sta succedendo |
+| **LAPI** (Local API) | Mantiene il database delle decisioni (ban/unban), gestisce i bouncers | Il "registro" — chi è bannato e per quanto |
+| **Bouncer** (cs-firewall-bouncer) | Applica le decisioni al firewall in tempo reale | Il "braccio" — esegue il blocco effettivo |
+| **Hub** | Repository centrale di scenari, parser, collection e blocklist | Il "cloud intelligence" — feed collaborativo |
+
+### 1.2 Differenze strutturali rispetto a Fail2ban
+
+| Caratteristica | Fail2ban | CrowdSec |
+|---|---|---|
+| **Architettura** | Monolitica — analisi + blocco nello stesso processo | Modulare — agent separato da bouncer |
+| **Linguaggio scenari** | Regex su log | YAML strutturato + Grok patterns |
+| **Threat Intelligence** | Nessuna (locale only) | Blocklist collaborativa da milioni di istanze |
+| **Multi-bouncer** | No — solo iptables integrato | Sì — stessa decisione applicata a più bouncer (fw, nginx, Cloudflare) |
+| **API** | Nessuna | REST API locale + CrowdSec Central API (CAPI) |
+| **Condivisione** | Nessuna — ogni installazione è isolata | Opt-in: i tuoi ban vengono condivisi, ricevi i ban degli altri |
+| **Dashboard** | Nessuna nativa | CrowdSec Console (cloud) o visualizzazione locale |
+| **Scenari comunità** | Da scrivere manualmente | Hub con centinaia di scenari mantenuti |
+
+### 1.3 Rilevanza per UC-01
+
+Nel threat model del progetto (sez. 6, `docs/02-architecture.md`), **UC-01** descrive il rischio di brute force SSH su SOC-01 (T1110.001 — Credential Access). L'architettura originale prevedeva fail2ban come risposta automatica. CrowdSec è la scelta architetturalmente superiore perché:
+
+1. **Blocco proattivo** — gli IP già noti come malevoli a livello globale vengono bloccati *prima ancora* che tentino su SOC-01 (blocklist Hub)
+2. **Detection più ricca** — lo scenario `crowdsecurity/ssh-bf` riconosce pattern di brute force più sofisticati del semplice conteggio regex di fail2ban
+3. **Integrazione nativa Wazuh** — le decisioni CrowdSec vengono portate in Wazuh come alert strutturati, chiudendo il loop detection → response → visibilità
+4. **Estensibilità** — quando si aggiungeranno servizi esposti (reverse proxy, VPN), basta aggiungere un bouncer senza riscrivere la logica
+
+> **Nota tecnica — CAPI (Central API):** CrowdSec può condividere i tuoi ban e ricevere i ban della comunità tramite la CAPI cloud. In HomeSOC questa funzione è abilitata di default ma non critica — anche senza connettività CAPI le blocklist vengono aggiornate tramite `cscli hub update`. La disabilitazione è documentata in sez. 9 per chi preferisce un profilo zero-disclosure.
+
+---
+
+## 2. Prerequisiti
+
+### 2.1 Verifica stato SOC-01
+
+```bash
+# Su SOC-01 (come root o con sudo)
+
+# Verifica OS host Proxmox
+cat /etc/debian_version
+# Atteso: Debian 12.x (Proxmox 8.x)
+
+uname -r
+# Atteso: kernel 6.x
+
+# Verifica connettività internet (per download pacchetti)
+curl -s https://packagecloud.io/crowdsec/crowdsec/gpgkey | head -1
+# Atteso: -----BEGIN PGP PUBLIC KEY BLOCK-----
+
+# Verifica che il servizio SSH sia attivo (target di protezione primario)
+systemctl is-active ssh
+# Atteso: active
+
+# Verifica log auth.log presenti (sorgente per parser SSH)
+ls -la /var/log/auth.log
+# Il file deve esistere e avere dimensione > 0
+
+# Verifica che Wazuh Manager su vm-103 sia raggiungibile (per integrazione syslog)
+nc -zv 192.168.68.204 514 2>&1 || echo "Porta 514 non ancora aperta — da configurare in sez. 7"
+```
+
+### 2.2 Verifica firewall host
+
+```bash
+# Su SOC-01
+# Proxmox usa nftables di default — verifica backend attivo
+nft list ruleset | head -5
+# Se output vuoto o errore, usare iptables:
+iptables -L -n | head -5
+
+# Annota quale backend è attivo: nftables o iptables
+# Rilevante per la configurazione del bouncer in sez. 5
+```
+
+### 2.3 Requisiti di sistema
+
+| Parametro | Minimo | Nota |
+|---|---|---|
+| OS | Debian 11+ / Ubuntu 20.04+ | Proxmox 8.x = Debian 12 ✅ |
+| RAM overhead CrowdSec | ~50-100 MB | Trascurabile su SOC-01 |
+| Disco | ~200 MB (binari + db) | Il database SQLite cresce con i ban |
+| Porte in uso (locale) | 8080/tcp (LAPI) | Solo localhost — non esposto |
+| Connettività | Internet per install + hub update | Solo in uscita |
+
+---
+
+## 3. Installazione CrowdSec Agent
+
+### 3.1 Aggiunta repository e installazione
+
+```bash
+# Su SOC-01
+
+# Aggiungi il repository CrowdSec
+curl -s https://packagecloud.io/install/repositories/crowdsec/crowdsec/script.deb.sh | bash
+
+# Installa CrowdSec
+apt install crowdsec -y
+
+# Verifica che il servizio sia partito
+systemctl status crowdsec
+# Atteso: active (running)
+
+# Verifica versione
+cscli version
+# Atteso: CrowdSec v1.6.x o superiore
+```
+
+### 3.2 Verifica installazione base
+
+```bash
+# Su SOC-01
+
+# Il wizard di installazione auto-rileva i servizi attivi
+# Verifica che SSH sia stato rilevato
+cscli collections list | grep ssh
+
+# Verifica acquisitions — quali log sta leggendo CrowdSec
+cat /etc/crowdsec/acquis.yaml
+# Deve contenere almeno:
+# - /var/log/auth.log (SSH brute force)
+# - /var/log/syslog
+
+# Visualizza metriche in tempo reale
+cscli metrics
+# Mostra: parser hits, scenario triggers, decisions
+```
+
+### 3.3 Verifica LAPI attiva
+
+```bash
+# Su SOC-01
+
+# La LAPI gira su localhost:8080
+curl -s http://localhost:8080/v1/heartbeat
+# Atteso: {"status":"ok"} o simile
+
+# Verifica che il bouncer possa comunicare con la LAPI
+cscli bouncers list
+# Lista vuota inizialmente — i bouncer vengono aggiunti in sez. 5
+```
+
+---
+
+## 4. Configurazione Collections
+
+### 4.1 Collections rilevanti per HomeSOC
+
+Le **collections** sono bundle che raggruppano parser, scenari e postoverflows necessari per proteggere uno specifico servizio. Una collection installata porta con sé tutto il necessario.
+
+```bash
+# Su SOC-01
+
+# Aggiorna l'hub CrowdSec (scarica lista aggiornata di collection/scenari)
+cscli hub update
+
+# Installa le collection per HomeSOC
+# 1. Brute force SSH — protezione primaria per UC-01
+cscli collections install crowdsecurity/ssh-bf
+
+# 2. Baseline Linux — comportamenti malevoli generici su sistemi Linux
+cscli collections install crowdsecurity/linux
+
+# 3. Syslog — parsing log di sistema
+cscli collections install crowdsecurity/syslog
+
+# Aggiorna tutto (scarica le versioni più recenti degli scenari installati)
+cscli hub upgrade
+
+# Verifica installazione
+cscli collections list
+# Tutte e tre devono mostrare status: enabled
+```
+
+### 4.2 Verifica parser e scenari attivi
+
+```bash
+# Su SOC-01
+
+# Lista parser installati
+cscli parsers list
+# Atteso: crowdsecurity/sshd-logs, crowdsecurity/syslog-logs, etc.
+
+# Lista scenari attivi (cosa CrowdSec sta rilevando)
+cscli scenarios list
+# Atteso: crowdsecurity/ssh-bf, crowdsecurity/ssh-slow-bf, etc.
+```
+
+### 4.3 Configurazione acquisitions per Proxmox Web UI
+
+Il log di Proxmox Web UI (pveproxy) non viene rilevato automaticamente. Aggiungilo manualmente:
+
+```bash
+# Su SOC-01
+
+# Aggiungi sorgente log pveproxy per proteggere la Web UI (porta 8006)
+cat >> /etc/crowdsec/acquis.yaml << 'EOF'
+
+---
+filenames:
+  - /var/log/pveproxy/access.log
+labels:
+  type: nginx
+tags:
+  - proxmox-webui
+EOF
+
+# Riavvia CrowdSec per applicare
+systemctl restart crowdsec
+
+# Verifica che il nuovo acquisition sia attivo
+cscli metrics | grep proxmox
+```
+
+> ℹ️ **Nota:** I log di pveproxy hanno formato HTTP access log compatibile con il parser nginx. Questo permette a CrowdSec di rilevare scan/brute force sulla Web UI Proxmox (porta 8006) senza parser dedicato.
+
+---
+
+## 5. Installazione cs-firewall-bouncer
+
+Il **cs-firewall-bouncer** è il componente che traduce le decisioni LAPI in regole iptables/nftables effettive. Senza bouncer, CrowdSec rileva ma non blocca.
+
+### 5.1 Installazione
+
+```bash
+# Su SOC-01
+
+# Installa il bouncer
+apt install crowdsec-firewall-bouncer-nftables -y
+
+# Se l'host usa iptables invece di nftables:
+# apt install crowdsec-firewall-bouncer-iptables -y
+
+# Verifica che il bouncer sia registrato con la LAPI
+cscli bouncers list
+# Deve mostrare: cs-firewall-bouncer con IP 127.0.0.1 e status: valid
+```
+
+### 5.2 Verifica configurazione bouncer
+
+```bash
+# Su SOC-01
+
+# Il file di configurazione del bouncer
+cat /etc/crowdsec/bouncers/crowdsec-firewall-bouncer.yaml
+```
+
+Verifica i campi chiave (non modificare se i default sono corretti):
+
+```yaml
+# Valori attesi/raccomandati — verifica che corrispondano
+mode: nftables           # o iptables in base al backend host
+api_url: http://127.0.0.1:8080/
+api_key: <GENERATA AUTOMATICAMENTE>
+```
+
+```bash
+# Avvia e abilita il bouncer
+systemctl enable --now crowdsec-firewall-bouncer
+
+# Verifica status
+systemctl status crowdsec-firewall-bouncer
+# Atteso: active (running)
+```
+
+### 5.3 Verifica che il bouncer applichi le decisioni
+
+```bash
+# Su SOC-01
+
+# Test: aggiungi una decisione di ban manuale su un IP di test (usa RFC5737 — range doc)
+cscli decisions add --ip 198.51.100.1 --duration 5m --reason "test-ban-manuale"
+
+# Verifica che la decisione sia in lista
+cscli decisions list | grep 198.51.100.1
+
+# Verifica che nftables abbia recepito il ban
+nft list ruleset | grep 198.51.100.1
+# Deve mostrare la regola di drop per quell'IP
+
+# Rimuovi il ban di test
+cscli decisions delete --ip 198.51.100.1
+
+# Verifica rimozione da nftables
+nft list ruleset | grep 198.51.100.1
+# Non deve restituire nulla
+```
+
+> ✅ **Checkpoint:** Se il test sopra ha funzionato, il ciclo LAPI → Bouncer → nftables è operativo. CrowdSec ora blocca effettivamente gli IP malevoli.
+
+---
+
+## 6. Threat Intelligence — Blocklist Hub
+
+CrowdSec fornisce blocklist di IP malevoli noti a livello globale, aggiornate continuamente dalla comunità. Questa funzione è attiva anche senza servizi esposti a internet — protegge da device interni compromessi che tentano di raggiungere SOC-01.
+
+### 6.1 Verifica aggiornamento blocklist
+
+```bash
+# Su SOC-01
+
+# Aggiorna hub (scenari + blocklist)
+cscli hub update && cscli hub upgrade
+
+# Verifica che il feed di blocklist sia attivo
+cscli hub list | grep blocklist
+
+# Visualizza decisioni attive (incluse quelle da blocklist)
+cscli decisions list
+# Le entry con "CAPI" come sorgente vengono dalla blocklist collaborativa
+```
+
+### 6.2 Statistiche protezione attiva
+
+```bash
+# Su SOC-01
+
+# Mostra conteggio decisioni attive per tipo
+cscli decisions list -o json | python3 -c "
+import json, sys
+from collections import Counter
+data = json.load(sys.stdin)
+if data:
+    c = Counter(d['type'] for d in data)
+    for k,v in c.items(): print(f'{k}: {v}')
+else:
+    print('Nessuna decisione attiva al momento')
+"
+
+# Panoramica metriche
+cscli metrics
+```
+
+### 6.3 Iscrizione a blocklist premium Hub (opzionale)
+
+CrowdSec offre blocklist specializzate (TOR exit nodes, ransomware C2, etc.) tramite Hub. Per accedere:
+
+```bash
+# Registrazione account CrowdSec Console (gratuita)
+# https://app.crowdsec.net → Sign up
+
+# Dopo registrazione, enrolla SOC-01 nella Console
+cscli console enroll <ENROLLMENT-KEY-DA-CONSOLE>
+
+# Verifica enrollment
+cscli console status
+```
+
+> ℹ️ L'enrollment alla Console è **opzionale**. CrowdSec funziona completamente offline — l'hub update scarica gli aggiornamenti tramite `cscli hub update` senza richiedere account. L'enrollment aggiunge solo la dashboard web e le blocklist premium.
+
+---
+
+## 7. Integrazione Wazuh — Pipeline CrowdSec → Syslog → Wazuh
+
+Questa sezione configura il forwarding degli alert CrowdSec a Wazuh su vm-103. Ogni decisione di blocco (ban/unban) diventa un evento visibile nella Wazuh Dashboard.
+
+### 7.1 Architettura del flusso
+
+```
+SOC-01 (192.168.68.200)                vm-103 (192.168.68.204)
+┌────────────────────────┐             ┌────────────────────────┐
+│  CrowdSec Agent        │             │  Wazuh Manager         │
+│  (rileva brute force)  │             │                        │
+│         │              │             │  ┌──────────────────┐  │
+│         ▼              │             │  │  logcollector    │  │
+│  LAPI (decisione ban)  │             │  │  (syslog 514)    │  │
+│         │              │             │  └────────┬─────────┘  │
+│         ▼              │  UDP 514    │           │            │
+│  notification plugin   │ ──────────▶│  ┌────────▼─────────┐  │
+│  (crowdsec-syslog)     │             │  │  analysisd       │  │
+│                        │             │  │  (rules custom)  │  │
+└────────────────────────┘             │  └────────┬─────────┘  │
+                                       │           │            │
+                                       │  ┌────────▼─────────┐  │
+                                       │  │  Wazuh Dashboard │  │
+                                       │  │  (alert visibili)│  │
+                                       │  └──────────────────┘  │
+                                       └────────────────────────┘
+```
+
+### 7.2 Configurazione notification plugin CrowdSec (syslog output)
+
+CrowdSec supporta plugin di notifica nativi. Useremo il plugin `http` in modalità syslog, oppure rsyslog locale per il forwarding.
+
+**Metodo 1 — rsyslog forwarding (più semplice e robusto):**
+
+```bash
+# Su SOC-01
+
+# CrowdSec scrive i log in /var/log/crowdsec/crowdsec.log
+# Configura rsyslog per forwardare le righe CrowdSec a Wazuh
+
+cat > /etc/rsyslog.d/50-crowdsec-wazuh.conf << 'EOF'
+# Forwarding CrowdSec decisions a Wazuh su vm-103
+# Filtra solo le righe contenenti "ban" o "decision" nei log CrowdSec
+module(load="imfile" Mode="inotify")
+
+input(type="imfile"
+      File="/var/log/crowdsec/crowdsec.log"
+      Tag="crowdsec"
+      Severity="warning"
+      Facility="local3")
+
+# Forward a Wazuh syslog listener
+if $programname == 'crowdsec' then {
+    action(type="omfwd"
+           Target="192.168.68.204"
+           Port="514"
+           Protocol="udp"
+           Template="RSYSLOG_SyslogProtocol23Format")
+    stop
+}
+EOF
+
+# Riavvia rsyslog
+systemctl restart rsyslog
+
+# Verifica configurazione rsyslog
+rsyslogd -N1
+# Atteso: nessun errore
+```
+
+### 7.3 Apertura porta syslog su vm-103
+
+```bash
+# Su vm-103 (192.168.68.204) via SSH
+
+# Verifica se Wazuh Manager ascolta già su 514/udp
+ss -ulnp | grep 514
+# Se nessun output, configurare il logcollector Wazuh
+
+# Apri porta 514/udp sul firewall vm-103 solo per SOC-01
+sudo ufw allow from 192.168.68.200 to any port 514 proto udp comment "CrowdSec syslog da SOC-01"
+
+# Verifica regola aggiunta
+sudo ufw status numbered | grep 514
+```
+
+### 7.4 Configurazione Wazuh logcollector per syslog CrowdSec
+
+```bash
+# Su vm-103 (192.168.68.204) via SSH
+
+# Aggiungi sorgente syslog nel ossec.conf di Wazuh
+sudo nano /var/ossec/etc/ossec.conf
+```
+
+Aggiungi la seguente sezione all'interno di `<ossec_config>`:
+
+```xml
+<!-- Syslog da CrowdSec su SOC-01 -->
+<remote>
+  <connection>syslog</connection>
+  <port>514</port>
+  <protocol>udp</protocol>
+  <allowed-ips>192.168.68.200</allowed-ips>
+</remote>
+```
+
+```bash
+# Riavvia Wazuh Manager per applicare
+sudo systemctl restart wazuh-manager
+
+# Verifica che il manager ascolti su 514/udp
+sudo ss -ulnp | grep 514
+# Atteso: *:514 in ascolto
+```
+
+### 7.5 Decoder e regole Wazuh per eventi CrowdSec
+
+```bash
+# Su vm-103 (192.168.68.204) via SSH
+
+# Crea decoder per i log CrowdSec
+sudo nano /var/ossec/etc/decoders/crowdsec-decoder.xml
+```
+
+```xml
+<!-- Decoder per eventi CrowdSec via syslog -->
+<decoder name="crowdsec">
+  <prematch>^crowdsec</prematch>
+</decoder>
+
+<decoder name="crowdsec-ban">
+  <parent>crowdsec</parent>
+  <prematch>Ban</prematch>
+  <regex>Ban\s(\S+)\s.*for\s(\S+)\s.*by\s(\S+)</regex>
+  <order>srcip, duration, scenario</order>
+</decoder>
+
+<decoder name="crowdsec-unban">
+  <parent>crowdsec</parent>
+  <prematch>Unban</prematch>
+  <regex>Unban\s(\S+)</regex>
+  <order>srcip</order>
+</decoder>
+```
+
+```bash
+# Crea regole custom per alert CrowdSec
+sudo nano /var/ossec/etc/rules/crowdsec-rules.xml
+```
+
+```xml
+<!-- Regole Wazuh per eventi CrowdSec — HomeSOC -->
+<group name="crowdsec,">
+
+  <!-- Ban automatico — IP bloccato da CrowdSec -->
+  <rule id="100050" level="8">
+    <decoded_as>crowdsec-ban</decoded_as>
+    <description>CrowdSec: IP $(srcip) bannato — scenario: $(scenario)</description>
+    <mitre>
+      <id>T1110.001</id>
+    </mitre>
+    <group>crowdsec_ban,intrusion_prevention,</group>
+  </rule>
+
+  <!-- Ban da brute force SSH — priorità alta, mappa su UC-01 -->
+  <rule id="100051" level="10">
+    <if_sid>100050</if_sid>
+    <match>ssh-bf</match>
+    <description>CrowdSec: ban per brute force SSH — UC-01 — IP: $(srcip)</description>
+    <mitre>
+      <id>T1110.001</id>
+    </mitre>
+    <group>crowdsec_ban,brute_force,authentication_failures,</group>
+  </rule>
+
+  <!-- Ban da blocklist globale Hub -->
+  <rule id="100052" level="7">
+    <if_sid>100050</if_sid>
+    <match>crowdsecurity/</match>
+    <description>CrowdSec: IP $(srcip) bloccato da blocklist Hub globale</description>
+    <group>crowdsec_ban,threat_intel,</group>
+  </rule>
+
+  <!-- Unban — IP rilasciato dopo scadenza ban -->
+  <rule id="100053" level="3">
+    <decoded_as>crowdsec-unban</decoded_as>
+    <description>CrowdSec: IP $(srcip) rimosso dalla blocklist (ban scaduto)</description>
+    <group>crowdsec_unban,</group>
+  </rule>
+
+</group>
+```
+
+```bash
+# Verifica sintassi regole
+sudo /var/ossec/bin/ossec-analysisd -t
+# Atteso: nessun errore
+
+# Ricarica regole senza riavvio completo
+sudo systemctl reload wazuh-manager
+```
+
+### 7.6 Test integrazione syslog → Wazuh
+
+```bash
+# Su SOC-01 — genera un evento CrowdSec di test
+# Aggiungi e rimuovi un ban di test
+cscli decisions add --ip 198.51.100.99 --duration 2m --reason "test-wazuh-integration"
+
+# Attendi 10-15 secondi poi verifica che l'alert sia arrivato su Wazuh
+# Su vm-103:
+sudo grep "CrowdSec" /var/ossec/logs/alerts/alerts.log | tail -5
+# Deve mostrare un alert con rule.id 100050 o 100051
+
+# Cleanup
+cscli decisions delete --ip 198.51.100.99
+```
+
+> ✅ **Checkpoint:** Se `alerts.log` mostra l'evento, la pipeline CrowdSec → rsyslog → Wazuh è operativa.
+
+---
+
+## 8. Verifica end-to-end
+
+### 8.1 Simulazione brute force SSH
+
+```bash
+# Da MacBook Pro M1 (o qualsiasi host LAN diverso da SOC-01)
+# ATTENZIONE: questo test genera tentativi SSH falliti — normale, è il test previsto
+
+# Esegui 10 tentativi SSH con password errata verso SOC-01
+for i in {1..10}; do
+  ssh -o "StrictHostKeyChecking=no" -o "ConnectTimeout=3" \
+    wronguser@192.168.68.200 2>/dev/null || true
+  sleep 0.5
+done
+
+echo "Test completato — verifica decisione CrowdSec su SOC-01"
+```
+
+```bash
+# Su SOC-01 — verifica che l'IP del MacBook sia stato bannato
+cscli decisions list | grep <IP-MACBOOK>
+# Esempio: cscli decisions list | grep 192.168.68.108
+
+# Verifica che nftables abbia la regola di drop
+nft list ruleset | grep <IP-MACBOOK>
+
+# Verifica che l'alert sia arrivato in Wazuh (su vm-103)
+# Dashboard Wazuh → Security Events → filtra: rule.id:100051
+```
+
+```bash
+# Rimuovi il ban del MacBook dopo il test
+cscli decisions delete --ip <IP-MACBOOK>
+# Esempio: cscli decisions delete --ip 192.168.68.108
+```
+
+> ⚠️ **Importante:** Dopo il test, verifica che il MacBook sia stato de-bannato prima di continuare il lavoro su SOC-01.
+
+### 8.2 Verifica metriche globali
+
+```bash
+# Su SOC-01
+
+# Panoramica completa dello stato CrowdSec
+cscli metrics
+# Deve mostrare: parser hits > 0, scenario triggers attivi
+
+# Riepilogo decisioni attive
+echo "=== Decisioni attive ==="
+cscli decisions list | head -20
+
+echo "=== Bouncers connessi ==="
+cscli bouncers list
+
+echo "=== Collections installate ==="
+cscli collections list
+
+echo "=== Hub aggiornato ==="
+cscli hub list | grep -E "STATE|enabled"
+```
+
+---
+
+## 9. Preparazione per esposizione futura
+
+Questa sezione documenta la struttura per aggiungere bouncers su nuovi servizi senza dover riconfigurare l'agent — il design "pronto per scalare" del progetto HomeSOC.
+
+### 9.1 Struttura bouncers per servizi futuri
+
+| Servizio futuro | Bouncer da aggiungere | Collection aggiuntiva |
+|---|---|---|
+| Nginx reverse proxy | `crowdsec-nginx-bouncer` | `crowdsecurity/nginx` |
+| Traefik | `crowdsec-bouncer-traefik-plugin` | `crowdsecurity/traefik` |
+| WireGuard / Tailscale | `cs-firewall-bouncer` (già installato) | — |
+| HAProxy | `cs-haproxy-bouncer` | `crowdsecurity/haproxy` |
+
+### 9.2 Pattern di aggiunta bouncer futuro
+
+Quando si espone un nuovo servizio, il pattern da seguire è:
+
+```bash
+# 1. Installa la collection per il servizio
+cscli collections install crowdsecurity/<SERVIZIO>
+
+# 2. Aggiungi il log del servizio in acquis.yaml
+# /etc/crowdsec/acquis.yaml:
+# filenames:
+#   - /var/log/<servizio>/access.log
+# labels:
+#   type: <servizio>
+
+# 3. Se serve un bouncer applicativo (non solo firewall):
+apt install crowdsec-<servizio>-bouncer -y
+
+# 4. Riavvia
+systemctl restart crowdsec
+
+# Il bouncer firewall esistente blocca già a livello IP —
+# il bouncer applicativo aggiunge captcha/rate limiting a livello HTTP
+```
+
+### 9.3 Disabilitazione CAPI per profilo zero-disclosure (opzionale)
+
+Se si preferisce non partecipare alla condivisione collaborativa:
+
+```bash
+# Su SOC-01
+# Disabilita sharing verso CrowdSec Central API
+sudo nano /etc/crowdsec/config.yaml
+```
+
+Trovare e modificare la sezione `api.server`:
+
+```yaml
+api:
+  server:
+    online_client:
+      credentials_path: ""  # stringa vuota = CAPI disabilitata
+```
+
+```bash
+systemctl restart crowdsec
+# Le blocklist locali (Hub update) rimangono funzionali
+# Solo la condivisione cloud viene disabilitata
+```
+
+---
+
+## 10. Backup e persistenza della configurazione
+
+### 10.1 File di configurazione da includere nel backup
+
+```bash
+# Su SOC-01 — lista file critici CrowdSec
+ls -la /etc/crowdsec/
+# crowdsec.yaml       — configurazione principale
+# acquis.yaml         — sorgenti log
+# profiles.yaml       — profili di risposta
+# bouncers/           — configurazione bouncers
+# hub/                — scenari e parser scaricati
+
+# Database decisioni (SQLite)
+ls -la /var/lib/crowdsec/data/crowdsec.db
+```
+
+### 10.2 Export configurazione per git
+
+```bash
+# Su SOC-01 — crea backup della config per archiviazione
+
+mkdir -p /root/homesoc-config-backup/crowdsec
+
+# Copia file di configurazione (senza secrets)
+cp /etc/crowdsec/crowdsec.yaml /root/homesoc-config-backup/crowdsec/
+cp /etc/crowdsec/acquis.yaml /root/homesoc-config-backup/crowdsec/
+cp /etc/crowdsec/profiles.yaml /root/homesoc-config-backup/crowdsec/
+
+# Esporta lista collections/scenari installati
+cscli collections list -o json > /root/homesoc-config-backup/crowdsec/collections-installed.json
+cscli scenarios list -o json > /root/homesoc-config-backup/crowdsec/scenarios-installed.json
+
+echo "Backup configurazione CrowdSec in /root/homesoc-config-backup/crowdsec/"
+```
+
+> ⚠️ **Attenzione:** Non includere nel backup `/etc/crowdsec/local_api_credentials.yaml` e `/etc/crowdsec/bouncers/*.yaml` — contengono API key locali. In caso di ripristino, rigenera le chiavi con `cscli bouncers add <nome>`.
+
+### 10.3 Aggiornamento programmato
+
+```bash
+# Su SOC-01 — cron giornaliero per aggiornamento hub
+crontab -e
+```
+
+Aggiungi la riga:
+
+```cron
+# Aggiornamento CrowdSec Hub ogni giorno alle 03:00
+0 3 * * * /usr/bin/cscli hub update && /usr/bin/cscli hub upgrade --force >> /var/log/crowdsec/hub-update.log 2>&1
+```
+
+---
+
+## 11. Verifica finale e checklist
+
+### 11.1 Checklist di completamento
+
+**Installazione Agent:**
+- [ ] `systemctl is-active crowdsec` → `active`
+- [ ] `cscli version` → CrowdSec v1.6.x o superiore
+- [ ] LAPI risponde: `curl -s http://localhost:8080/v1/heartbeat` → `{"status":"ok"}`
+
+**Collections e scenari:**
+- [ ] `cscli collections list | grep crowdsecurity/ssh-bf` → `enabled`
+- [ ] `cscli collections list | grep crowdsecurity/linux` → `enabled`
+- [ ] `cscli collections list | grep crowdsecurity/syslog` → `enabled`
+- [ ] `cscli scenarios list` → ssh-bf, ssh-slow-bf presenti
+
+**Acquisitions:**
+- [ ] `/etc/crowdsec/acquis.yaml` contiene `/var/log/auth.log`
+- [ ] `/etc/crowdsec/acquis.yaml` contiene `/var/log/pveproxy/access.log`
+- [ ] `cscli metrics` mostra parser hits > 0
+
+**Firewall Bouncer:**
+- [ ] `systemctl is-active crowdsec-firewall-bouncer` → `active`
+- [ ] `cscli bouncers list` → cs-firewall-bouncer con status `valid`
+- [ ] Test ban manuale: `cscli decisions add --ip 198.51.100.1 --duration 1m --reason test` → regola appare in `nft list ruleset`
+- [ ] Test unban: regola rimossa dopo `cscli decisions delete --ip 198.51.100.1`
+
+**Threat Intelligence Hub:**
+- [ ] `cscli hub update` eseguito senza errori
+- [ ] `cscli decisions list` mostra decisioni (anche 0 è OK se nessun attacco recente)
+
+**Integrazione Wazuh:**
+- [ ] `/etc/rsyslog.d/50-crowdsec-wazuh.conf` presente
+- [ ] `systemctl is-active rsyslog` → `active`
+- [ ] Porta 514/udp aperta su vm-103 per 192.168.68.200 — `sudo ufw status | grep 514`
+- [ ] Wazuh logcollector configurato con `<remote>` syslog 514/udp
+- [ ] Decoder `crowdsec-decoder.xml` presente in `/var/ossec/etc/decoders/`
+- [ ] Regole `crowdsec-rules.xml` presenti in `/var/ossec/etc/rules/`
+- [ ] `sudo /var/ossec/bin/ossec-analysisd -t` → nessun errore
+- [ ] Test ban → alert rule 100050 o 100051 visibile in Wazuh Dashboard
+
+**Protezione SSH (UC-01):**
+- [ ] Test brute force simulato → IP bannato da CrowdSec in < 30 secondi
+- [ ] Ban compare in `nft list ruleset`
+- [ ] Alert UC-01 (rule 100051) generato in Wazuh
+- [ ] MacBook de-bannato dopo test
+
+**Cron aggiornamento:**
+- [ ] Cron giornaliero `cscli hub update && upgrade` configurato alle 03:00
+
+### 11.2 Comandi diagnostici di riepilogo
+
+```bash
+# Su SOC-01 — stato completo CrowdSec
+echo "=== CrowdSec Agent ===" && systemctl is-active crowdsec
+echo "=== Firewall Bouncer ===" && systemctl is-active crowdsec-firewall-bouncer
+echo "=== LAPI ===" && curl -s http://localhost:8080/v1/heartbeat 2>/dev/null || echo "LAPI non risponde"
+echo "=== Bouncers ===" && cscli bouncers list
+echo "=== Decisioni attive ===" && cscli decisions list | wc -l && echo "decisioni totali"
+echo "=== Collections ===" && cscli collections list | grep -c enabled && echo "collections enabled"
+echo "=== Metriche parser ===" && cscli metrics | grep -A5 "Parser"
+echo "=== rsyslog → Wazuh ===" && systemctl is-active rsyslog
+```
+
+```bash
+# Su vm-103 — verifica ricezione eventi CrowdSec
+echo "=== Wazuh Manager ===" && systemctl is-active wazuh-manager
+echo "=== Porta 514 aperta ===" && ss -ulnp | grep 514
+echo "=== Ultimi alert CrowdSec ===" && sudo grep -i crowdsec /var/ossec/logs/alerts/alerts.log 2>/dev/null | tail -5
+```
+
+---
+
+## 12. Troubleshooting
+
+### CrowdSec agent non parte — errore LAPI
+
+```bash
+# Su SOC-01
+journalctl -u crowdsec -n 50 --no-pager
+# Cercate: "unable to start local API" o "port already in use"
+
+# Verifica che la porta 8080 non sia occupata da altro
+ss -tlnp | grep 8080
+
+# Se occupata, cambia porta LAPI in /etc/crowdsec/config.yaml:
+# api.server.listen_uri: 127.0.0.1:8081
+# e aggiorna il bouncer: api_url: http://127.0.0.1:8081/
+```
+
+### Bouncer non applica i ban — nftables vuoto
+
+```bash
+# Su SOC-01
+journalctl -u crowdsec-firewall-bouncer -n 30 --no-pager
+# Cercate: "unable to connect to LAPI" o errori di autenticazione
+
+# Rigenera la chiave API del bouncer
+cscli bouncers delete cs-firewall-bouncer
+cscli bouncers add cs-firewall-bouncer
+# Copia la nuova api_key in /etc/crowdsec/bouncers/crowdsec-firewall-bouncer.yaml
+
+systemctl restart crowdsec-firewall-bouncer
+```
+
+### Log SSH non vengono parsati — 0 hits nel parser
+
+```bash
+# Su SOC-01
+
+# Verifica che il file acquis.yaml punti al log corretto
+cat /etc/crowdsec/acquis.yaml | grep auth
+
+# Verifica permessi su auth.log
+ls -la /var/log/auth.log
+# crowdsec deve poterlo leggere (di solito gira come root — ok)
+
+# Test manuale del parser su una riga di log reale
+echo 'Apr 16 10:00:00 soc-01 sshd[12345]: Failed password for invalid user admin from 1.2.3.4 port 54321 ssh2' | \
+  cscli explain --type syslog -f -
+# Deve mostrare: scenario crowdsecurity/ssh-bf triggered
+```
+
+### Alert non arrivano su Wazuh — syslog silenzioso
+
+```bash
+# Su SOC-01
+# Verifica che rsyslog stia effettivamente leggendo il log CrowdSec
+tail -f /var/log/crowdsec/crowdsec.log &
+# Genera un ban di test:
+cscli decisions add --ip 198.51.100.50 --duration 1m --reason test
+# Verifica che la riga appaia entro 5 secondi nel log
+
+# Verifica che rsyslog stia forwardando
+tcpdump -i any -n udp port 514 -c 5
+# Deve mostrare pacchetti verso 192.168.68.204:514
+
+# Se nessun pacchetto: verifica rsyslog.conf
+rsyslogd -N1 2>&1 | grep -i error
+```
+
+### IP bannato ma ancora raggiungibile — nftables non attivo
+
+```bash
+# Su SOC-01
+
+# Verifica backend firewall attivo
+nft list ruleset 2>/dev/null && echo "nftables OK" || echo "nftables non disponibile"
+iptables -L -n 2>/dev/null | head -3
+
+# Se il host usa iptables ma hai installato il bouncer nftables:
+apt remove crowdsec-firewall-bouncer-nftables -y
+apt install crowdsec-firewall-bouncer-iptables -y
+systemctl enable --now crowdsec-firewall-bouncer
+```
+
+### Wazuh non riconosce il decoder CrowdSec
+
+```bash
+# Su vm-103
+# Verifica sintassi XML decoder
+sudo /var/ossec/bin/ossec-analysisd -t 2>&1 | grep -i "crowdsec\|error"
+
+# Test manuale decoder con wazuh-logtest
+echo "crowdsec Ban 1.2.3.4 for 4h by crowdsecurity/ssh-bf" | \
+  sudo /var/ossec/bin/wazuh-logtest
+# Deve mostrare: Decoder matched: crowdsec-ban + Rule fired: 100051
+```
+
+---
+
+## Prossimi passi
+
+Dopo aver completato e verificato questa checklist:
+
+1. Commit su Git:
+   ```bash
+   git add runbooks/crowdsec-deploy.md
+   git commit -m "runbooks(crowdsec): Phase 3 — CrowdSec su SOC-01, bouncer, integrazione Wazuh v1.0"
+   ```
+
+2. Aggiornare `docs/01-threat-model.md`:
+   - Sez. UC-01: aggiornare risposta prevista da `fail2ban` → `CrowdSec cs-firewall-bouncer`
+   - Stato: `Implementato` (se il test brute force ha generato l'alert in Wazuh)
+   - R-10: aggiornare stato mitigazione con CrowdSec come controllo attivo
+
+3. Commit threat model aggiornato:
+   ```bash
+   git add docs/01-threat-model.md
+   git commit -m "docs(threat-model): update v1.3 — UC-01 CrowdSec implementato, R-10 mitigato"
+   ```
+
+4. Procedere con il runbook successivo di Fase 3, oppure aprire Fase 4:
+   - **Fase 4:** `runbooks/thehive-deploy.md` — TheHive 5 + Cortex 3 (vm-104, `192.168.68.205`)
+   - Integrazione Wazuh API → case creation automatico su alert CrowdSec (rule 100051)
+
+---
+
+*File: `runbooks/crowdsec-deploy.md` · v1.0 · Aprile 2026*  
+*HomeSOC Project — Alessandro · LM Sicurezza Informatica · UniMI*
