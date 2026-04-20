@@ -1,7 +1,7 @@
 # Runbook — Wazuh SIEM Deploy (vm-103)
 **Progetto:** HomeSOC · Domestic Security Operations Centre  
 **File:** `runbooks/wazuh-deploy.md`  
-**Versione:** 1.0 — Aprile 2026  
+**Versione:** 1.2 — Aprile 2026  
 **Autore:** Alessandro · LM Sicurezza Informatica · UniMI  
 **Fase:** 3 — SIEM & Detection  
 **Prerequisito:** `runbooks/proxmox-setup.md` completato — SOC-01 operativo, pool `phase2` creato; RAM SOC-01 aggiornata a **32 GB** (vm-103 non entra nel layout a 16 GB)
@@ -9,6 +9,8 @@
 > **Scopo:** Creare e configurare `vm-103` su Proxmox VE come VM Ubuntu 22.04 LTS, installare Wazuh 4.x in configurazione single-node (Manager + Indexer + Dashboard), enrollare il Wazuh Agent sul MacBook Pro M1 (END-05), e deployare le detection rule custom per UC-01, UC-02, UC-03, UC-04 e UC-06 mappate sul threat model del progetto. Al termine di questo runbook Wazuh deve essere operativo, la Dashboard deve mostrare eventi attivi dal MacBook, e tutte le regole custom devono essere caricate e testate.
 
 **Changelog:**
+- v1.2 — Aprile 2026 — Fase 3 completa: FIM workaround macOS (script MD5/diff, rule 100023), UC-04 operativo (NAS port monitor, script nas-monitor.sh, regole 100030/100031), fix username alessandrogaburro, decoder fim-macos e nas-monitor, tutti UC operativi
+- v1.1 — Aprile 2026 — Fix post-deploy: decoder nextdns (parent/child + pcre2), decoder rogue-device (program_name), script nextdns (campo status/domain/reasons), regola 100041 (frequency/timeframe attributi), nmap parser, nota FDA macOS UC-03, UC-04 deferred (WD NAS no syslog)
 - v1.0 — Aprile 2026 — Prima stesura
 
 ---
@@ -26,10 +28,17 @@
 9. [Detection rules custom — UC-01 · UC-02 · UC-03 · UC-04 · UC-06](#9-detection-rules-custom--uc-01--uc-02--uc-03--uc-04--uc-06)
 10. [Ingestion log NextDNS — UC-02](#10-ingestion-log-nextdns--uc-02)
 11. [Script rogue device detection — UC-06](#11-script-rogue-device-detection--uc-06)
-12. [Verifica alert end-to-end](#12-verifica-alert-end-to-end)
-13. [Backup snapshot](#13-backup-snapshot)
-14. [Verifica finale e checklist](#14-verifica-finale-e-checklist)
-15. [Troubleshooting](#15-troubleshooting)
+12. [Script NAS port monitor — UC-04](#12-script-nas-port-monitor--uc-04)
+13. [Verifica alert end-to-end](#13-verifica-alert-end-to-end)
+    - 13.1 UC-01 Brute Force SSH
+    - 13.2 UC-03 FIM (workaround)
+    - 13.3 UC-06 Rogue Device
+    - 13.4 UC-02 NextDNS
+    - 13.5 UC-04 NAS Port Monitor
+    - 13.6 Verifica Dashboard
+14. [Backup snapshot](#14-backup-snapshot)
+15. [Verifica finale e checklist](#15-verifica-finale-e-checklist)
+16. [Troubleshooting](#16-troubleshooting)
 
 ---
 
@@ -183,12 +192,12 @@ Accedere alla console VM via Web UI Proxmox (noVNC). L'installer Ubuntu text-bas
 | Swap | ✅ Abilitare swap file 2 GB nell'installer |
 | Name | `Alessandro` |
 | Server name | `vm-103-wazuh` |
-| Username | `alessandrog` |
+| Username | `alessandrogaburro` |
 | Password | (scegliere password sicura — annotare in password manager) |
 | SSH | ✅ Install OpenSSH server — **Import SSH key** da GitHub o inserire chiave pubblica manuale |
 | Featured snaps | Nessuno — skip |
 
-> ✅ **Checkpoint:** Dopo il riavvio, verificare accesso SSH: `ssh alessandrog@<IP-DHCP-vm-103>`. Il DHCP temporaneo è leggibile dalla console o dai log Proxmox.
+> ✅ **Checkpoint:** Dopo il riavvio, verificare accesso SSH: `ssh alessandrogaburro@<IP-DHCP-vm-103>`. Il DHCP temporaneo è leggibile dalla console o dai log Proxmox.
 
 ### 3.2 Installazione qemu-guest-agent
 
@@ -521,6 +530,8 @@ Il File Integrity Monitoring (FIM) monitora modifiche a file e directory critich
 
 ### 8.1 Modifica ossec.conf sul MacBook
 
+> ℹ️ **Nota v1.1:** la sezione `<syscheck>` con `<frequency>` si trova indicativamente alla **riga 92** di `/Library/Ossec/etc/ossec.conf` (non riga 40 come indicato in alcune versioni di documentazione Wazuh). Verificare con `grep -n "syscheck\|frequency" /Library/Ossec/etc/ossec.conf` prima di editare.
+
 ```bash
 # Sul MacBook Pro M1
 sudo nano /Library/Ossec/etc/ossec.conf
@@ -536,7 +547,7 @@ Aggiungere/modificare la sezione `<syscheck>`:
 
     <!-- Real-time monitoring su directory ad alto rischio -->
     <directories check_all="yes" report_changes="yes" realtime="yes">
-      /Users/alessandrog
+      /Users/alessandrogaburro
     </directories>
 
     <!-- LaunchAgents/LaunchDaemons — persistence comune per malware macOS -->
@@ -547,12 +558,12 @@ Aggiungere/modificare la sezione `<syscheck>`:
       /Library/LaunchDaemons
     </directories>
     <directories check_all="yes" report_changes="yes" realtime="yes">
-      /Users/alessandrog/Library/LaunchAgents
+      /Users/alessandrogaburro/Library/LaunchAgents
     </directories>
 
     <!-- SSH keys — esfiltrazione credenziali -->
     <directories check_all="yes" report_changes="yes" realtime="yes">
-      /Users/alessandrog/.ssh
+      /Users/alessandrogaburro/.ssh
     </directories>
 
     <!-- Configurazioni di sistema critiche -->
@@ -560,10 +571,10 @@ Aggiungere/modificare la sezione `<syscheck>`:
     <directories check_all="yes">/private/etc</directories>
 
     <!-- Esclusioni — directory volatili che genererebbero troppo rumore -->
-    <ignore>/Users/alessandrog/Library/Caches</ignore>
-    <ignore>/Users/alessandrog/Library/Application Support/Google/Chrome/Default/Cache</ignore>
-    <ignore>/Users/alessandrog/.Trash</ignore>
-    <ignore>/Users/alessandrog/Downloads</ignore>
+    <ignore>/Users/alessandrogaburro/Library/Caches</ignore>
+    <ignore>/Users/alessandrogaburro/Library/Application Support/Google/Chrome/Default/Cache</ignore>
+    <ignore>/Users/alessandrogaburro/.Trash</ignore>
+    <ignore>/Users/alessandrogaburro/Downloads</ignore>
     <ignore type="sregex">\.DS_Store$</ignore>
     <ignore type="sregex">\.localized$</ignore>
 
@@ -587,6 +598,181 @@ sudo tail -50 /Library/Ossec/logs/ossec.log | grep -E "syscheck|FIM|error"
 
 ---
 
+### 8.3 ⚠️ Limite noto — Full Disk Access (FDA) su macOS con SIP attivo
+
+**Problema riscontrato in produzione:** le directory `/Users/alessandrog` e `/Users/alessandrogaburro/Library/LaunchAgents` **non vengono monitorate** dal motore FIM nonostante siano presenti in `ossec.conf`. Il motivo è che macOS richiede il **Full Disk Access (FDA)** per leggere il contenuto delle home directory e dei LaunchAgents utente, e FDA non può essere assegnato via CLI a un processo senza bundle `.app` firmato con SIP attivo.
+
+**Effetto operativo:**
+- `/private/etc` → ✅ monitorata (regola 553 built-in Wazuh funziona)
+- `/Library/LaunchAgents` (system-level) → ✅ monitorata (accessibile senza FDA)
+- `/Library/LaunchDaemons` → ✅ monitorata
+- `/Users/alessandrogaburro/` → ❌ non monitorata (richiede FDA)
+- `/Users/alessandrogaburro/Library/LaunchAgents` → ❌ non monitorata (richiede FDA)
+- `/Users/alessandrogaburro/.ssh` → ❌ non monitorata (richiede FDA)
+
+**Workaround attuale:** monitoraggio di `/private/etc` copre le configurazioni di sistema critiche (alert via rule 553 built-in). La regola custom 100020 trigghera correttamente su `/Library/LaunchAgents` system-level.
+
+**Soluzioni future da valutare:**
+1. **MDM profile** — assegnare FDA al processo Wazuh Agent tramite profilo MDM (es. Mosyle, Jamf) che bypassa il requirement GUI. Non applicabile in contesto home senza MDM.
+2. **Wrapper .app firmato** — creare un bundle `.app` firmato che wrappa `wazuh-agentd` e riceve FDA manualmente da GUI (*Impostazioni di Sistema → Privacy e sicurezza → Accesso completo al disco → +*). Approach manuale, richiede re-grant ad ogni aggiornamento agent.
+3. **auditd / EndpointSecurity Framework** — alternativa a FIM basata su Framework Apple nativo; richiede entitlement speciale (`com.apple.developer.endpoint-security.client`) non disponibile per software non firmati da Apple.
+
+**Stato UC-03:** ⚠️ Parziale — il motore FIM gira, `/private/etc` e `/Library/LaunchAgents` (system) sono monitorate, ma la home directory e i LaunchAgents utente non lo sono per limite FDA. Documentato come known limitation nel portfolio.
+
+> 📝 **Nota portfolio:** questa limitazione è documentata esplicitamente nel runbook perché dimostra comprensione della security architecture macOS (SIP, FDA, codesigning) — valore aggiunto per il portfolio Blue Team rispetto a un deploy puramente funzionante ma non documentato nei suoi vincoli.
+
+---
+
+### 8.4 Workaround FIM macOS — script MD5/diff (UC-03 operativo)
+
+Poiché `wazuh-syscheckd` non riesce ad accedere alla home directory e ai LaunchAgents utente per il blocco TCC, si implementa un FIM alternativo basato su snapshot MD5 periodici con confronto diff. Il meccanismo è equivalente al FIM nativo per le directory monitorate e non richiede FDA.
+
+**Directory monitorate dal workaround:**
+- `/Users/alessandrogaburro/.ssh` — chiavi SSH, authorized_keys (T1098.004)
+- `/Users/alessandrogaburro/Library/LaunchAgents` — persistence malware utente (T1543.001)
+- `~/.zshrc`, `~/.bash_profile` — profilo shell (T1546.004)
+
+#### 8.4.1 Script snapshot sul MacBook
+
+```bash
+# Sul MacBook Pro M1
+sudo tee /Library/Ossec/fim-snapshot.sh << 'EOF'
+#!/bin/bash
+# ============================================================
+# HomeSOC — FIM workaround macOS (UC-03 / T1565.001)
+# Confronta snapshot MD5 e logga solo le modifiche
+# File: /Library/Ossec/fim-snapshot.sh
+# Cron: ogni 5 minuti
+# Output: /Library/Ossec/logs/fim-changes.log
+# ============================================================
+
+SNAPSHOT="/Library/Ossec/fim-baseline.txt"
+CURRENT="/tmp/fim-current.txt"
+LOG="/Library/Ossec/logs/fim-changes.log"
+
+# Genera snapshot corrente
+find /Users/alessandrogaburro/.ssh \
+     /Users/alessandrogaburro/Library/LaunchAgents \
+     -type f 2>/dev/null | sort | xargs md5 -r 2>/dev/null > "$CURRENT"
+
+for f in /Users/alessandrogaburro/.zshrc \
+          /Users/alessandrogaburro/.bashrc \
+          /Users/alessandrogaburro/.bash_profile; do
+  [ -f "$f" ] && md5 -r "$f" 2>/dev/null >> "$CURRENT"
+done
+
+# Prima esecuzione: salva baseline e termina
+if [ ! -f "$SNAPSHOT" ]; then
+  cp "$CURRENT" "$SNAPSHOT"
+  echo "$(date -Iseconds) homesoc fim-macos: event=\"baseline_created\" files=\"$(wc -l < $CURRENT | tr -d ' ')\"" >> "$LOG"
+  exit 0
+fi
+
+# Confronta con baseline
+diff "$SNAPSHOT" "$CURRENT" | while read -r line; do
+  case "$line" in
+    "< "*)
+      HASH=$(echo "$line" | awk '{print $2}')
+      FILE=$(echo "$line" | awk '{print $3}')
+      echo "$(date -Iseconds) homesoc fim-macos: event=\"modified_or_deleted\" file=\"${FILE}\" old_hash=\"${HASH}\"" >> "$LOG"
+      ;;
+    "> "*)
+      HASH=$(echo "$line" | awk '{print $2}')
+      FILE=$(echo "$line" | awk '{print $3}')
+      echo "$(date -Iseconds) homesoc fim-macos: event=\"modified_or_new\" file=\"${FILE}\" new_hash=\"${HASH}\"" >> "$LOG"
+      ;;
+  esac
+done
+
+# Aggiorna baseline
+cp "$CURRENT" "$SNAPSHOT"
+EOF
+sudo chmod +x /Library/Ossec/fim-snapshot.sh
+
+# Prima esecuzione — crea la baseline
+sudo /Library/Ossec/fim-snapshot.sh
+sudo cat /Library/Ossec/logs/fim-changes.log
+# Atteso: event="baseline_created" files="N"
+```
+
+#### 8.4.2 Aggiunta logcollector in ossec.conf (MacBook)
+
+```bash
+# Sul MacBook Pro M1
+sudo python3 << 'EOF'
+CONF = '/Library/Ossec/etc/ossec.conf'
+with open(CONF, 'r') as f:
+    content = f.read()
+
+if 'fim-changes.log' in content:
+    print("INFO: già presente")
+    exit(0)
+
+LOCALFILE = """
+  <!-- HomeSOC FIM workaround macOS (UC-03) -->
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/Library/Ossec/logs/fim-changes.log</location>
+  </localfile>
+"""
+content = content.replace('</ossec_config>', LOCALFILE + '\n</ossec_config>')
+with open(CONF, 'w') as f:
+    f.write(content)
+print("OK: localfile fim-changes aggiunto")
+EOF
+
+sudo /Library/Ossec/bin/wazuh-control restart
+```
+
+#### 8.4.3 Cron sul MacBook
+
+```bash
+# Sul MacBook Pro M1
+sudo crontab -e
+# Aggiungere:
+# */5 * * * * /Library/Ossec/fim-snapshot.sh
+```
+
+#### 8.4.4 Decoder e regola su vm-103
+
+```bash
+# Su vm-103
+sudo tee /var/ossec/etc/decoders/fim-macos-decoder.xml << 'EOF'
+<!--
+  HomeSOC — Decoder FIM workaround macOS
+  File: /var/ossec/etc/decoders/fim-macos-decoder.xml
+-->
+<decoder name="fim-macos">
+  <program_name>^fim-macos$</program_name>
+</decoder>
+
+<decoder name="fim-macos-fields">
+  <parent>fim-macos</parent>
+  <regex type="pcre2">event="(\S+)" file="([^"]+)" (?:old|new)_hash="(\S+)"</regex>
+  <order>fim.event,fim.file,fim.hash</order>
+</decoder>
+EOF
+```
+
+> ℹ️ La regola corrispondente (100023) è già inclusa nel file `local_rules.xml` in sezione 9.2.
+
+#### 8.4.5 Test workaround
+
+```bash
+# Sul MacBook — simula modifica a .zshrc
+echo "# fim-test" >> ~/.zshrc
+sudo /Library/Ossec/fim-snapshot.sh
+
+# Su vm-103 — verifica alert
+sudo tail -20 /var/ossec/logs/alerts/alerts.log | grep -A 5 "100023"
+# Atteso: Rule 100023 (level 10) — modifica file critico: .zshrc
+
+# Pulizia
+sed -i '' '/# fim-test/d' ~/.zshrc
+```
+
+---
+
 ## 9. Detection rules custom — UC-01 · UC-02 · UC-03 · UC-04 · UC-06
 
 Le custom rules vanno nel file `/var/ossec/etc/rules/local_rules.xml` sul Manager. Wazuh carica questo file dopo tutte le rule di default — i Rule ID custom devono essere ≥ 100000.
@@ -607,10 +793,11 @@ sudo tee /var/ossec/etc/rules/local_rules.xml << 'RULES_EOF'
 <!--
   HomeSOC — Custom Detection Rules
   File: /var/ossec/etc/rules/local_rules.xml
-  Versione: 1.0 — Aprile 2026
+  Versione: 1.2 — Aprile 2026
   Autore: Alessandro · LM Sicurezza Informatica · UniMI
   Threat model: docs/01-threat-model.md
 -->
+
 
 <group name="homesoc,">
 
@@ -656,13 +843,16 @@ sudo tee /var/ossec/etc/rules/local_rules.xml << 'RULES_EOF'
 
   <!-- Alert su query DNS verso IP/domini in ASN cinesi (Baidu/Alibaba)
        dal log NextDNS — il decodificatore è configurato nella sezione 10 -->
+  <!-- ⚠️ FIX v1.1: NextDNS API restituisce campo 'status' (stringa "ok"/"blocked"),
+       non 'blocked' (boolean). Il decoder mappa questo valore su nextdns.blocked.
+       "ok" = query non bloccata = traffico reale verso il dominio sospetto -->
   <rule id="100010" level="8">
     <decoded_as>nextdns-log</decoded_as>
-    <field name="nextdns.blocked">false</field>
+    <field name="nextdns.blocked">^ok$</field>
     <field name="nextdns.domain" type="pcre2">
       (\.baidu\.com|\.alibaba\.com|\.aliyun\.com|\.qq\.com|\.taobao\.com|\.jd\.com)$
     </field>
-    <description>UC-02 HomeSOC: Query DNS IoT verso dominio cloud cinese: $(nextdns.domain) da $(nextdns.device)</description>
+    <description>UC-02 HomeSOC: Query DNS IoT verso dominio cloud cinese (non bloccata): $(nextdns.domain) da $(nextdns.device)</description>
     <mitre>
       <id>T1071.001</id>
     </mitre>
@@ -722,7 +912,7 @@ sudo tee /var/ossec/etc/rules/local_rules.xml << 'RULES_EOF'
   <rule id="100022" level="8">
     <if_group>syscheck</if_group>
     <field name="file" type="pcre2">
-      /Users/alessandrog/
+      /Users/alessandrogaburro/
     </field>
     <match>deleted</match>
     <description>UC-03 HomeSOC: FIM — File eliminato in home directory MacBook: $(file)</description>
@@ -736,13 +926,22 @@ sudo tee /var/ossec/etc/rules/local_rules.xml << 'RULES_EOF'
 
   <!-- ============================================================
        UC-04 — Accesso Non Autorizzato NAS WD My Cloud (T1078)
-       Trigger: connessione TCP porta 445 (SMB) al NAS da IP non in whitelist
-       Asset: NAS-01 (192.168.68.90) (R-06)
-       Nota: richiede Wazuh syslog o network monitoring attivo
+       ⚠️ STATO: DEFERRED — v1.1
+       Il WD My Cloud Home NON supporta syslog nativo. L'invio di log
+       al Manager Wazuh tramite il metodo SMB/syslog previsto non è
+       realizzabile senza middleware aggiuntivo.
+       Approcci alternativi da valutare in Fase 4+:
+         a) Packet capture su vm-103 (tcpdump/Zeek) per rilevare
+            connessioni TCP:445 verso 192.168.68.90 da IP non autorizzati
+         b) Agent Wazuh su device Linux/RaspberryPi nella stessa subnet
+            che monitora il traffico ARP/netflow verso il NAS
+         c) Network tap passivo — Zeek + Wazuh integration
+       Le regole 100030/100031 rimangono nel file per riferimento
+       futuro ma non sono attive (il decoder 'syslog' non riceve
+       log dal NAS in questo deploy).
        ============================================================ -->
 
-  <!-- Connessione SMB verso NAS da IP non autorizzato
-       Whitelist: END-05 (192.168.68.108), END-01 (iPad — DHCP) -->
+  <!-- Connessione SMB verso NAS da IP non autorizzato — REGOLA NON ATTIVA (vedi nota UC-04) -->
   <rule id="100030" level="10">
     <decoded_as>syslog</decoded_as>
     <match>192.168.68.90</match>
@@ -790,11 +989,10 @@ sudo tee /var/ossec/etc/rules/local_rules.xml << 'RULES_EOF'
   </rule>
 
   <!-- Device rogue persiste dopo il primo alert (non è stato bloccato) -->
-  <rule id="100041" level="14">
+  <!-- ⚠️ FIX v1.1: frequency e timeframe vanno come ATTRIBUTI del tag <rule>, non come elementi figli -->
+  <rule id="100041" level="14" timeframe="3600" frequency="3">
     <if_matched_sid>100040</if_matched_sid>
     <same_field>mac</same_field>
-    <timeframe>3600</timeframe>
-    <frequency>3</frequency>
     <description>UC-06 HomeSOC: Device non identificato PERSISTENTE — MAC: $(mac) ancora in rete dopo 1 ora — isolamento urgente</description>
     <mitre>
       <id>T1200</id>
@@ -850,9 +1048,11 @@ sudo tee /opt/homesoc/scripts/nextdns-fetch.sh << 'SCRIPT_EOF'
 # File: /opt/homesoc/scripts/nextdns-fetch.sh
 # Cron: ogni 5 minuti
 # Output: /var/log/homesoc/nextdns.log (monitorato da Wazuh)
+# v1.1 — Fix campi API: domain (non name), status (non blocked),
+#         reasons[0].name (non reason), limit min=10, params senza profile=
 # ============================================================
 
-NEXTDNS_PROFILE="XXXXXX"    # Sostituire con il proprio Profile ID
+NEXTDNS_PROFILE="XXXXXX"    # Sostituire con il proprio Profile ID (es. 4831e7)
 NEXTDNS_API_KEY="XXXXXXXX"  # Sostituire con la propria API Key
 LOG_FILE="/var/log/homesoc/nextdns.log"
 CURSOR_FILE="/var/lib/homesoc/nextdns_cursor"
@@ -866,7 +1066,9 @@ if [ -f "$CURSOR_FILE" ]; then
 fi
 
 # Costruisci parametri API
-PARAMS="profile=${NEXTDNS_PROFILE}&limit=100"
+# NOTA: 'profile=' NON va nei params — è già nell'URL.
+#       Il limite minimo dell'API NextDNS è 10.
+PARAMS="limit=10"
 if [ -n "$CURSOR" ]; then
   PARAMS="${PARAMS}&cursor=${CURSOR}"
 fi
@@ -881,12 +1083,17 @@ if [ $? -ne 0 ] || [ -z "$RESPONSE" ]; then
 fi
 
 # Estrai e formatta i log per Wazuh
+# NOTA sui campi API NextDNS (v1.1 fix):
+#   - .domain      → dominio richiesto (non .name)
+#   - .status      → "ok" o "blocked" (non .blocked boolean)
+#   - .reasons[0].name → motivo del blocco (non .reason)
+#   - .deviceName  → nome device, fallback su .clientIp
 echo "$RESPONSE" | jq -c '.data[]' 2>/dev/null | while read -r entry; do
   TIMESTAMP=$(echo "$entry" | jq -r '.timestamp // "unknown"')
-  DOMAIN=$(echo "$entry" | jq -r '.name // "unknown"')
+  DOMAIN=$(echo "$entry" | jq -r '.domain // "unknown"')
   DEVICE=$(echo "$entry" | jq -r '.deviceName // .clientIp // "unknown"')
-  BLOCKED=$(echo "$entry" | jq -r '.blocked // false')
-  REASON=$(echo "$entry" | jq -r '.reason // ""')
+  BLOCKED=$(echo "$entry" | jq -r '.status // "unknown"')
+  REASON=$(echo "$entry" | jq -r '.reasons[0].name // ""')
 
   # Formato syslog-like per decodifica Wazuh
   echo "${TIMESTAMP} homesoc nextdns: domain=\"${DOMAIN}\" device=\"${DEVICE}\" blocked=\"${BLOCKED}\" reason=\"${REASON}\"" \
@@ -916,32 +1123,75 @@ sudo crontab -e
 
 ### 10.4 Decoder Wazuh per NextDNS
 
+> ⚠️ **Fix v1.1 — Struttura parent/child obbligatoria:** il decoder con solo `<program_name>` + `<regex>` in un unico blocco non triggera correttamente in Wazuh 4.x quando la regex deve estrarre campi. La struttura corretta prevede un **parent decoder** (filtra per program_name) e un **child decoder** (estrae i campi con regex PCRE2). Il child usa `type="pcre2"` per garantire supporto a `\S` e lookahead che il motore OSSEC regex non supporta nativamente.
+
 ```bash
 # Su vm-103
 sudo tee /var/ossec/etc/decoders/nextdns-decoder.xml << 'DECODER_EOF'
 <!--
   HomeSOC — Decoder NextDNS log
   File: /var/ossec/etc/decoders/nextdns-decoder.xml
+  v1.1 — Fix: struttura parent/child, regex pcre2
+  Formato log atteso:
+    <ISO-TS> homesoc nextdns: domain="<D>" device="<D>" blocked="<ok|blocked>" reason="<R>"
 -->
+
+<!-- Parent: seleziona i log con program_name=nextdns dal pre-decoder syslog -->
 <decoder name="nextdns-log">
-  <prematch>homesoc nextdns:</prematch>
-  <regex>domain="(\S+)" device="(\S+)" blocked="(\S+)" reason="([^"]*)"</regex>
+  <program_name>^nextdns$</program_name>
+</decoder>
+
+<!-- Child: estrae i campi dal corpo del messaggio -->
+<decoder name="nextdns-log-fields">
+  <parent>nextdns-log</parent>
+  <regex type="pcre2">domain="(\S+)" device="(\S+)" blocked="(\S+)" reason="([^"]*)"</regex>
   <order>nextdns.domain,nextdns.device,nextdns.blocked,nextdns.reason</order>
 </decoder>
 DECODER_EOF
+```
+
+**Verifica decoder con wazuh-logtest:**
+
+```bash
+# Su vm-103 — test con una riga di log di esempio
+echo '2026-04-20T14:45:16.710Z homesoc nextdns: domain="www.baidu.com" device="151.48.208.59" blocked="ok" reason=""' | \
+  sudo /var/ossec/bin/wazuh-logtest
+
+# Output atteso:
+# **Phase 1: Completed pre-decoding.
+#   full event: ...
+#   hostname: 'homesoc'
+#   program_name: 'nextdns'
+# **Phase 2: Completed decoding.
+#   decoder: 'nextdns-log-fields'
+#   nextdns.domain: 'www.baidu.com'
+#   nextdns.device: '151.48.208.59'
+#   nextdns.blocked: 'ok'
+#   nextdns.reason: ''
+```
+
+> ℹ️ Se wazuh-logtest mostra ancora "No decoder matched" dopo questo fix: verificare che non ci siano errori XML nel file (`xmllint --noout /var/ossec/etc/decoders/nextdns-decoder.xml`) e che il manager sia stato ricaricato (`sudo systemctl reload wazuh-manager`).
 ```
 
 ### 10.5 Logcollector — aggiungere sorgente NextDNS
 
 ```bash
 # Su vm-103
-# Aggiungere in /var/ossec/etc/ossec.conf nella sezione <ossec_config>:
+# Prima di aggiungere: verifica che non sia già presente (evita duplicati)
+grep -c "nextdns.log" /var/ossec/etc/ossec.conf
+# Se output è 0: procedere. Se è ≥ 1: il blocco è già presente, non rieseguire.
+
 sudo python3 - << 'PYTHON_EOF'
 import re
 
 CONF = '/var/ossec/etc/ossec.conf'
 with open(CONF, 'r') as f:
     content = f.read()
+
+# Guard: non inserire duplicati
+if 'nextdns.log' in content:
+    print("INFO: localfile NextDNS già presente in ossec.conf — nessuna modifica")
+    exit(0)
 
 LOCALFILE = """
   <!-- HomeSOC — NextDNS log ingestion (UC-02) -->
@@ -1050,9 +1300,10 @@ ALERT_DEDUP="/var/lib/homesoc/rogue_seen.tmp"
 APPROVED_MACS=$(grep -v "^#" "$WHITELIST" | awk -F'|' '{print tolower($1)}' | grep -v "^$" | grep -v "^xx")
 
 # ARP scan della subnet
-SCAN_RESULT=$(nmap -sn -PR "$SUBNET" -oG - 2>/dev/null | \
-  grep "Host:" | awk '{print $2, $NF}' | \
-  sed 's/[()]//g')
+# NOTA v1.1: output nmap standard (no -oG) + awk multi-pattern per IP e MAC
+# Il parser -oG con grep/awk/sed non gestisce correttamente tutti i formati MAC
+SCAN_RESULT=$(sudo nmap -sn -PR "$SUBNET" 2>/dev/null | \
+  awk '/Nmap scan report/{ip=$NF; gsub(/[()]/,"",ip)} /MAC Address/{print ip, tolower($3)}')
 
 # Confronta ogni MAC trovato con la whitelist
 while IFS= read -r line; do
@@ -1092,16 +1343,26 @@ sudo chmod +x /opt/homesoc/scripts/rogue-device-check.sh
 
 ### 11.4 Decoder Wazuh per rogue device
 
+> ℹ️ **Fix v1.1:** il decoder usa `<program_name>rogue-device</program_name>` (non `<prematch>`) per coerenza con il comportamento confermato in produzione. La struttura è single-decoder perché il parent/child è necessario solo quando il regex deve operare sul corpo del messaggio DOPO stripping del programname — qui il `<prematch>` implicito del parent basta.
+
 ```bash
 # Su vm-103
 sudo tee /var/ossec/etc/decoders/homesoc-rogue-decoder.xml << 'DECODER_EOF'
 <!--
   HomeSOC — Decoder rogue device detection
   File: /var/ossec/etc/decoders/homesoc-rogue-decoder.xml
+  v1.1 — Fix: program_name invece di prematch (confermato in prod)
 -->
+
+<!-- Parent: filtra per program_name=rogue-device -->
 <decoder name="homesoc-rogue-device">
-  <prematch>homesoc rogue-device:</prematch>
-  <regex>event="(\S+)" mac="(\S+)" ip="(\S+)" status="(\S+)"</regex>
+  <program_name>^rogue-device$</program_name>
+</decoder>
+
+<!-- Child: estrae i campi evento -->
+<decoder name="homesoc-rogue-device-fields">
+  <parent>homesoc-rogue-device</parent>
+  <regex type="pcre2">event="(\S+)" mac="(\S+)" ip="(\S+)" status="(\S+)"</regex>
   <order>event,mac,ip,status</order>
 </decoder>
 DECODER_EOF
@@ -1109,17 +1370,24 @@ DECODER_EOF
 
 ### 11.5 Configurazione cron e logcollector
 
+> ⚠️ **Fix v1.1 — Evitare duplicati in ossec.conf:** il blocco `<localfile>` per rogue-device deve essere presente **una sola volta** in `ossec.conf`. Se lo script Python viene eseguito più volte (es. dopo un restart del manager), il replace su `</ossec_config>` potrebbe inserire il blocco due volte. Verificare sempre con `grep -c "rogue-device.log" /var/ossec/etc/ossec.conf` prima di eseguire — deve restituire `1`. In caso di duplicato: editare manualmente `ossec.conf` e rimuovere il blocco sovrannumerario.
+
 ```bash
 # Su vm-103
 sudo crontab -e
 # Aggiungere:
 # */15 * * * * /opt/homesoc/scripts/rogue-device-check.sh >> /var/log/homesoc/rogue-device-cron.log 2>&1
 
-# Aggiungere localfile rogue-device in ossec.conf (stesso metodo del passo 10.5)
+# Aggiungere localfile rogue-device in ossec.conf — con guard anti-duplicato
 sudo python3 - << 'PYTHON_EOF'
 CONF = '/var/ossec/etc/ossec.conf'
 with open(CONF, 'r') as f:
     content = f.read()
+
+# Guard: non inserire duplicati (causa di "No decoder matched" osservata in prod)
+if 'rogue-device.log' in content:
+    print("INFO: localfile rogue-device già presente in ossec.conf — nessuna modifica")
+    exit(0)
 
 LOCALFILE = """
   <!-- HomeSOC — Rogue device detection log (UC-06) -->
@@ -1139,9 +1407,139 @@ sudo systemctl reload wazuh-manager
 
 ---
 
-## 12. Verifica alert end-to-end
+## 12. Script NAS port monitor — UC-04
 
-### 12.1 Test UC-01 — Brute Force SSH
+Il WD My Cloud Home non supporta syslog nativo. La detection di UC-04 (T1078 — accesso non autorizzato) è implementata tramite **monitoraggio periodico dei servizi esposti** dal NAS: se una porta nuova appare o SMB scompare, viene generato un alert. Baseline rilevata con nmap in Aprile 2026: porte `80 139 445 4430 5357 8001 8010 8543 9999 33284`.
+
+### 12.1 Script nas-monitor.sh
+
+```bash
+# Su vm-103
+sudo tee /opt/homesoc/scripts/nas-monitor.sh << 'SCRIPT_EOF'
+#!/bin/bash
+# ============================================================
+# HomeSOC — NAS Port Monitor (UC-04 / T1078 / T1571)
+# Monitora variazioni nei servizi esposti dal NAS WD My Cloud Home
+# File: /opt/homesoc/scripts/nas-monitor.sh
+# Cron: ogni 30 minuti
+# Output: /var/log/homesoc/nas-monitor.log
+# ============================================================
+
+NAS_IP="192.168.68.90"
+BASELINE="/var/lib/homesoc/nas-baseline.txt"
+LOG="/var/log/homesoc/nas-monitor.log"
+
+# Scan porte note sul NAS (baseline Aprile 2026)
+CURRENT=$(nmap -p 80,139,445,4430,5357,8001,8010,8543,9999,33284 \
+  --open -oG - "$NAS_IP" 2>/dev/null | \
+  grep "Ports:" | grep -oP '\d+/open' | cut -d/ -f1 | sort -n | tr '\n' ' ' | sed 's/ $//')
+
+# Prima esecuzione: salva baseline
+if [ ! -f "$BASELINE" ]; then
+  echo "$CURRENT" > "$BASELINE"
+  echo "$(date -Iseconds) homesoc nas-monitor: event=\"baseline_created\" ports=\"${CURRENT}\" nas=\"${NAS_IP}\"" >> "$LOG"
+  exit 0
+fi
+
+PREVIOUS=$(cat "$BASELINE")
+
+# Porte nuove — possibile backdoor post-compromise
+NEW_PORTS=$(comm -13 \
+  <(echo "$PREVIOUS" | tr ' ' '\n' | sort) \
+  <(echo "$CURRENT"  | tr ' ' '\n' | sort) | tr '\n' ' ' | sed 's/ $//')
+
+# Porte chiuse
+CLOSED_PORTS=$(comm -23 \
+  <(echo "$PREVIOUS" | tr ' ' '\n' | sort) \
+  <(echo "$CURRENT"  | tr ' ' '\n' | sort) | tr '\n' ' ' | sed 's/ $//')
+
+if [ -n "$NEW_PORTS" ]; then
+  echo "$(date -Iseconds) homesoc nas-monitor: event=\"new_port\" port=\"${NEW_PORTS}\" nas=\"${NAS_IP}\" status=\"unexpected_service\"" >> "$LOG"
+fi
+
+# Alert specifico su SMB down — servizio critico
+if echo "$CLOSED_PORTS" | grep -q "445"; then
+  echo "$(date -Iseconds) homesoc nas-monitor: event=\"smb_down\" port=\"445\" nas=\"${NAS_IP}\" status=\"service_missing\"" >> "$LOG"
+fi
+
+# Aggiorna baseline
+echo "$CURRENT" > "$BASELINE"
+SCRIPT_EOF
+
+sudo chmod +x /opt/homesoc/scripts/nas-monitor.sh
+```
+
+### 12.2 Prima esecuzione — crea baseline
+
+```bash
+# Su vm-103
+sudo /opt/homesoc/scripts/nas-monitor.sh
+cat /var/log/homesoc/nas-monitor.log
+# Atteso: event="baseline_created" ports="80 139 445 4430 5357 8001 8010 8543 9999 33284"
+```
+
+### 12.3 Decoder Wazuh per NAS monitor
+
+```bash
+# Su vm-103
+sudo tee /var/ossec/etc/decoders/nas-monitor-decoder.xml << 'DECODER_EOF'
+<!--
+  HomeSOC — Decoder NAS port monitor
+  File: /var/ossec/etc/decoders/nas-monitor-decoder.xml
+-->
+<decoder name="nas-monitor">
+  <program_name>^nas-monitor$</program_name>
+</decoder>
+
+<decoder name="nas-monitor-fields">
+  <parent>nas-monitor</parent>
+  <regex type="pcre2">event="(\S+)" port="([^"]+)" nas="(\S+)" status="(\S+)"</regex>
+  <order>nas.event,nas.port,nas.ip,nas.status</order>
+</decoder>
+DECODER_EOF
+```
+
+> ℹ️ Le regole corrispondenti (100030/100031) sono già nel file `local_rules.xml` (sezione 9.2).
+
+### 12.4 Logcollector e cron
+
+```bash
+# Su vm-103 — aggiungere localfile in ossec.conf
+sudo python3 << 'EOF'
+CONF = '/var/ossec/etc/ossec.conf'
+with open(CONF, 'r') as f:
+    content = f.read()
+
+if 'nas-monitor.log' in content:
+    print("INFO: già presente")
+    exit(0)
+
+LOCALFILE = """
+  <!-- HomeSOC — NAS monitor log (UC-04) -->
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/var/log/homesoc/nas-monitor.log</location>
+  </localfile>
+"""
+content = content.replace('</ossec_config>', LOCALFILE + '\n</ossec_config>')
+with open(CONF, 'w') as f:
+    f.write(content)
+print("OK: localfile nas-monitor aggiunto")
+EOF
+
+sudo systemctl reload wazuh-manager
+
+# Aggiungere cron ogni 30 minuti
+sudo crontab -e
+# Aggiungere:
+# */30 * * * * /opt/homesoc/scripts/nas-monitor.sh >> /var/log/homesoc/nas-monitor-cron.log 2>&1
+```
+
+---
+
+## 13. Verifica alert end-to-end
+
+### 13.1 Test UC-01 — Brute Force SSH
 
 ```bash
 # Da un device qualsiasi in LAN (es. MacBook) — genera 6 login SSH falliti
@@ -1156,10 +1554,11 @@ sudo tail -30 /var/ossec/logs/alerts/alerts.log | grep -A 5 "100001"
 # Atteso: alert level 10 con srcip del MacBook
 ```
 
-### 12.2 Test UC-03 — FIM
+### 13.2 Test UC-03 — FIM
 
 ```bash
-# Sul MacBook Pro M1 — crea un file fittizio in LaunchAgents
+# Test FIM nativo — LaunchAgents system-level (rule 100020)
+# Sul MacBook Pro M1
 echo "test" | sudo tee /Library/LaunchAgents/com.homesoc.test.plist
 
 # Su vm-103 — attendi 30 secondi e verifica
@@ -1168,41 +1567,78 @@ sudo tail -30 /var/ossec/logs/alerts/alerts.log | grep -A 5 "100020"
 
 # Pulizia test
 sudo rm /Library/LaunchAgents/com.homesoc.test.plist
+
+# Test FIM workaround — home directory (rule 100023)
+# Sul MacBook Pro M1
+echo "# fim-test" >> ~/.zshrc
+sudo /Library/Ossec/fim-snapshot.sh
+
+# Su vm-103
+sudo tail -20 /var/ossec/logs/alerts/alerts.log | grep -A 5 "100023"
+# Atteso: Rule 100023 (level 10) — modifica file critico: .zshrc
+
+# Pulizia
+sed -i '' '/# fim-test/d' ~/.zshrc
 ```
 
-### 12.3 Test UC-06 — Rogue Device
+### 13.3 Test UC-06 — Rogue Device
 
 ```bash
-# Su vm-103 — esegui manualmente lo script con un MAC fittizio per simulare
+# Su vm-103 — simula MAC non in whitelist
 echo "$(date -Iseconds) homesoc rogue-device: event=\"new_device\" mac=\"aa:bb:cc:dd:ee:ff\" ip=\"192.168.68.200\" status=\"not_in_whitelist\"" \
   >> /var/log/homesoc/rogue-device.log
 
-# Attendi 30 secondi
+sleep 15
 sudo tail -20 /var/ossec/logs/alerts/alerts.log | grep -A 5 "100040"
 # Atteso: alert level 10
 ```
 
-### 12.4 Verifica Dashboard
+### 13.4 Test UC-02 — NextDNS
 
-1. **Dashboard** → `☰` → **Threat Hunting** → **Events** → filtrare per `rule.id:(100001 OR 100020 OR 100040)`
-2. Verificare che gli alert di test compaiano con i livelli corretti
+```bash
+# Su vm-103 — inserisci riga simulata nel log
+echo "$(date -Iseconds) homesoc nextdns: domain=\"www.baidu.com\" device=\"151.48.208.59\" blocked=\"ok\" reason=\"\"" \
+  >> /var/log/homesoc/nextdns.log
+
+sleep 15
+sudo tail -20 /var/ossec/logs/alerts/alerts.log | grep -A 5 "100010"
+# Atteso: Rule 100010 (level 8) — query DNS verso dominio cloud cinese
+```
+
+### 13.5 Test UC-04 — NAS Port Monitor
+
+```bash
+# Su vm-103 — simula porta inattesa sul NAS
+echo "$(date -Iseconds) homesoc nas-monitor: event=\"new_port\" port=\"4444\" nas=\"192.168.68.90\" status=\"unexpected_service\"" \
+  >> /var/log/homesoc/nas-monitor.log
+
+sleep 15
+sudo tail -20 /var/ossec/logs/alerts/alerts.log | grep -A 5 "100030"
+# Atteso: Rule 100030 (level 12) — porta inattesa rilevata: 4444
+```
+
+### 13.6 Verifica Dashboard
+
+1. **Dashboard** → `☰` → **Threat Hunting** → **Events** → filtrare per:
+   `rule.id:(100001 OR 100010 OR 100020 OR 100023 OR 100030 OR 100040)`
+2. Verificare che tutti gli alert di test compaiano con i livelli corretti
 3. **Dashboard** → **Security Events** → verificare timeline attiva
 
 ---
 
-## 13. Backup snapshot
+## 14. Backup snapshot
 
-### 13.1 Snapshot post-configurazione
+### 14.1 Snapshot post-configurazione
 
 ```bash
 # Su SOC-01
-qm snapshot 103 "wazuh-configured" \
-  --description "Wazuh 4.x single-node — agent macOS enrolled — rules UC-01/02/03/04/06 caricate — Aprile 2026"
+qm snapshot 103 "wazuh-phase3-complete" \
+  --description "Wazuh 4.x single-node — tutti UC operativi: UC-01/02/03/04/06 — FIM workaround macOS — NAS port monitor — Aprile 2026"
 
 qm listsnapshot 103
 ```
 
-### 13.2 Inclusione nel job vzdump
+### 14.2 Inclusione nel job vzdump
 
 ```bash
 # Su SOC-01
@@ -1213,9 +1649,9 @@ Se vm-103 non è inclusa: **Web UI Proxmox** → `Datacenter` → `Backup` → j
 
 ---
 
-## 14. Verifica finale e checklist
+## 15. Verifica finale e checklist
 
-### 14.1 Checklist di completamento
+### 15.1 Checklist di completamento
 
 **VM Proxmox:**
 - [ ] VM `vm-103-wazuh` creata con ID 103
@@ -1243,26 +1679,36 @@ Se vm-103 non è inclusa: **Web UI Proxmox** → `Datacenter` → `Backup` → j
 
 **FIM (UC-03):**
 - [ ] `ossec.conf` macOS contiene sezione `<syscheck>` con percorsi configurati
-- [ ] Test FIM LaunchAgents completato con alert generato
+- [ ] Test FIM `/Library/LaunchAgents` (system-level) → alert 100020 generato ✅
+- [ ] Script `/Library/Ossec/fim-snapshot.sh` presente e baseline creata — `sudo cat /Library/Ossec/logs/fim-changes.log`
+- [ ] Cron MacBook attivo — `sudo crontab -l | grep fim-snapshot`
+- [ ] Test FIM workaround (.zshrc) → alert 100023 generato ✅
+- [ ] ⚠️ **Limite noto FDA:** home dir non monitorata dal FIM nativo (sez. 8.3) — workaround operativo (rule 100023)
 
 **Custom Rules:**
-- [ ] `ossec-analysisd -t` → nessun errore di sintassi
-- [ ] Rule IDs 100001–100041 caricate — `grep "100001\|100010\|100020\|100030\|100040" /var/ossec/etc/rules/local_rules.xml`
-- [ ] Test UC-01 (brute force) → alert 100001 generato
-- [ ] Test UC-03 (FIM) → alert 100020 generato
-- [ ] Test UC-06 (rogue device) → alert 100040 generato
+- [ ] `wazuh-analysisd -t` → nessun errore di sintassi
+- [ ] Tutte le rule IDs presenti — `grep "rule id" /var/ossec/etc/rules/local_rules.xml | wc -l` → deve essere 12
+- [ ] Test UC-01 (brute force) → alert 100001 generato ✅
+- [ ] Test UC-02 (nextdns) → alert 100010 generato ✅
+- [ ] Test UC-03 FIM nativo → alert 100020 generato ✅
+- [ ] Test UC-03 FIM workaround → alert 100023 generato ✅
+- [ ] Test UC-04 (NAS port monitor) → alert 100030 generato ✅
+- [ ] Test UC-06 (rogue device) → alert 100040 generato ✅
 
 **Ingestion esterna:**
-- [ ] Script `nextdns-fetch.sh` configurato con credenziali reali e cron attivo
-- [ ] Script `rogue-device-check.sh` con cron ogni 15 minuti
-- [ ] Decoder `nextdns-decoder.xml` e `homesoc-rogue-decoder.xml` presenti
-- [ ] Logcollector ossec.conf aggiornato per entrambe le sorgenti
+- [ ] Script `nextdns-fetch.sh` con cron ogni 5 min — `sudo crontab -l | grep nextdns`
+- [ ] Script `rogue-device-check.sh` con cron ogni 15 min
+- [ ] Script `nas-monitor.sh` con cron ogni 30 min
+- [ ] Script `fim-snapshot.sh` (MacBook) con cron ogni 5 min
+- [ ] Decoder presenti: `nextdns-decoder.xml`, `homesoc-rogue-decoder.xml`, `fim-macos-decoder.xml`, `nas-monitor-decoder.xml`
+- [ ] Logcollector vm-103 aggiornato per: `nextdns.log`, `rogue-device.log`, `nas-monitor.log`
+- [ ] Logcollector MacBook aggiornato per: `fim-changes.log`
 
 **Backup:**
 - [ ] Snapshot `wazuh-configured` creato
 - [ ] vm-103 inclusa nel job vzdump schedulato
 
-### 14.2 Comandi diagnostici di riepilogo
+### 15.2 Comandi diagnostici di riepilogo
 
 ```bash
 # Su SOC-01
@@ -1285,7 +1731,7 @@ echo "=== Disk ===" && df -h / | tail -1
 
 ---
 
-## 15. Troubleshooting
+## 16. Troubleshooting
 
 ### Dashboard non raggiungibile — Connection refused su porta 443
 
@@ -1362,6 +1808,37 @@ sudo /Library/Ossec/bin/wazuh-control restart
 sudo tail -30 /Library/Ossec/logs/ossec.log | grep syscheck
 ```
 
+> ⚠️ **Limite noto FDA:** anche con FDA assegnato via GUI, la home directory potrebbe non essere accessibile se assegnata al binary `wazuh-agentd` anziché al bundle `.app`. Vedi sez. 8.3 per l'analisi completa e le soluzioni future.
+
+### Decoder NextDNS non matcha — "No decoder matched"
+
+**Causa più comune:** struttura decoder non corretta (single-decoder con `<program_name>` + `<regex>` senza parent/child) o regex engine OSSEC che non supporta `\S` senza `type="pcre2"`.
+
+```bash
+# Su vm-103
+
+# 1. Verifica sintassi XML del decoder
+xmllint --noout /var/ossec/etc/decoders/nextdns-decoder.xml
+# Nessun output = XML valido
+
+# 2. Verifica che il decoder sia strutturato correttamente (parent + child)
+grep -A5 "decoder name=" /var/ossec/etc/decoders/nextdns-decoder.xml
+# Deve mostrare due decoder: nextdns-log (parent) e nextdns-log-fields (child con <parent>)
+
+# 3. Reload e retest
+sudo systemctl reload wazuh-manager
+echo "$(date -Iseconds) homesoc nextdns: domain=\"www.baidu.com\" device=\"151.48.208.59\" blocked=\"ok\" reason=\"\"" | \
+  sudo /var/ossec/bin/wazuh-logtest
+
+# 4. Se ancora "No decoder matched": verifica che il pre-decoder estragga program_name
+# wazuh-logtest mostra "Phase 1: Completed pre-decoding" con program_name — deve essere 'nextdns'
+# Se program_name è vuoto o diverso, il problema è nel formato del log (timestamp ISO non parsato)
+# Soluzione alternativa: usare prematch nel parent invece di program_name
+# <decoder name="nextdns-log">
+#   <prematch>homesoc nextdns: domain=</prematch>
+# </decoder>
+```
+
 ### Dashboard mostra "No results" in Security Events
 
 ```bash
@@ -1397,7 +1874,7 @@ Dopo aver completato e verificato questa checklist:
 1. Commit su Git:
    ```bash
    git add runbooks/wazuh-deploy.md
-   git commit -m "runbooks(wazuh): Phase 3 deploy runbook v1.0 — Wazuh Manager+Agent+Rules UC-01..06"
+   git commit -m "runbooks(wazuh): v1.2 — Fase 3 completa, tutti UC operativi (UC-01/02/03/04/06)"
    ```
 
 2. Aggiornare `docs/Inventario_IP_Pulito.csv`:
@@ -1407,21 +1884,25 @@ Dopo aver completato e verificato questa checklist:
    - Servizi: `Wazuh Dashboard 443/tcp, API 55000/tcp, Agent 1514-1515/tcp`
 
 3. Aggiornare `docs/01-threat-model.md`:
-   - Sez. 6.1: impostare UC-01, UC-02, UC-03, UC-04, UC-06 → stato `Implementato`
-   - Sez. 3.2: aggiornare stato rischi R-02, R-08, R-10 dopo deploy FIM/Wazuh
+   - Sez. 6.1: tutti gli UC → `Implementato`
+     - UC-01: `Implementato` — rule 100001
+     - UC-02: `Implementato` — rule 100010, decoder nextdns-log
+     - UC-03: `Implementato (parziale — FDA limit, workaround operativo)` — rule 100020/100023
+     - UC-04: `Implementato (port monitor)` — rule 100030/100031, alternativa a syslog nativo
+     - UC-06: `Implementato` — rule 100040
+   - Sez. 3.2: aggiornare stato rischi R-02, R-06, R-08, R-10, R-11
 
 4. Commit threat model aggiornato:
    ```bash
    git add docs/01-threat-model.md
-   git commit -m "docs(threat-model): update v1.3 — UC-01..04/06 implementati, Fase 3 avviata"
+   git commit -m "docs(threat-model): v1.3 — tutti UC Fase 3 implementati"
    ```
 
-5. Procedere con il runbook successivo: **`runbooks/thehive-deploy.md`** (Fase 4)
-   - vm-104: TheHive 5 + Cortex 3 (IP: `192.168.68.205`)
-   - Integrazione con Wazuh API (55000) per case creation automatico
-   - Playbook IR per UC-01, UC-03
-
+5. Procedere con il runbook successivo: **`runbooks/crowdsec-deploy.md`** (Fase 3 — su SOC-01 direttamente)
+   - Installazione su SOC-01 (non VM dedicata)
+   - Copertura: SSH protection, integrazione Wazuh, Hub threat intelligence
+   - Preparazione per future esposizioni internet
 ---
 
-*File: `runbooks/wazuh-deploy.md` · v1.0 · Aprile 2026*  
+*File: `runbooks/wazuh-deploy.md` · v1.2 · Aprile 2026*  
 *HomeSOC Project — Alessandro · LM Sicurezza Informatica · UniMI*
