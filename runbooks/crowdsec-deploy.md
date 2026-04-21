@@ -12,6 +12,7 @@
 
 **Changelog:**
 - v1.0 — Aprile 2026 — Prima stesura
+- v1.1 — Aprile 2026 — Fix post-deploy reale: percorso log CrowdSec, formato syslog RFC3164, decoder OS_Regex, regole Wazuh; aggiunte note Debian 13 e sezione troubleshooting estesa
 
 ---
 
@@ -116,9 +117,11 @@ curl -s https://packagecloud.io/crowdsec/crowdsec/gpgkey | head -1
 systemctl is-active ssh
 # Atteso: active
 
-# Verifica log auth.log presenti (sorgente per parser SSH)
-ls -la /var/log/auth.log
-# Il file deve esistere e avere dimensione > 0
+# Verifica log SSH disponibili
+# NOTA Debian 13 (Trixie): /var/log/auth.log non esiste — i log SSH
+# vanno nel journal di sistema. CrowdSec legge da journalctl (vedi sez. 4.3)
+journalctl _SYSTEMD_UNIT=ssh.service --no-pager -n 5
+# Atteso: righe con sshd — se vuoto, SSH non ha ancora ricevuto connessioni
 
 # Verifica che Wazuh Manager su vm-103 sia raggiungibile (per integrazione syslog)
 nc -zv 192.168.68.204 514 2>&1 || echo "Porta 514 non ancora aperta — da configurare in sez. 7"
@@ -253,28 +256,42 @@ cscli scenarios list
 
 ### 4.3 Configurazione acquisitions per Proxmox Web UI
 
-Il log di Proxmox Web UI (pveproxy) non viene rilevato automaticamente. Aggiungilo manualmente:
+Il log di Proxmox Web UI (pveproxy) non viene rilevato automaticamente. Aggiungi manualmente la sorgente con la sintassi corretta:
+
+> ⚠️ **Nota Debian 13 + CrowdSec v1.6+:** Il campo `tags:` nella configurazione `acquis.yaml` non è supportato nelle versioni recenti di CrowdSec e causa un errore fatale all'avvio (`field tags not found in type fileacquisition.FileConfiguration`). Usa esclusivamente i campi `filenames` e `labels`. Per SSH su Debian 13, usa `source: journalctl` invece di puntare a `/var/log/auth.log` che non esiste.
 
 ```bash
 # Su SOC-01
 
-# Aggiungi sorgente log pveproxy per proteggere la Web UI (porta 8006)
-cat >> /etc/crowdsec/acquis.yaml << 'EOF'
+# Prima verifica la configurazione attuale
+cat /etc/crowdsec/acquis.yaml
 
+# Sostituisci completamente acquis.yaml con la configurazione corretta
+cat > /etc/crowdsec/acquis.yaml << 'EOF'
+# SSH — lettura da journald (Debian 13: auth.log non esiste)
+source: journalctl
+journalctl_filter:
+  - "_SYSTEMD_UNIT=ssh.service"
+labels:
+  type: syslog
 ---
+# Proxmox Web UI — log HTTP in formato nginx-compatibile
 filenames:
   - /var/log/pveproxy/access.log
 labels:
   type: nginx
-tags:
-  - proxmox-webui
 EOF
 
 # Riavvia CrowdSec per applicare
 systemctl restart crowdsec
 
-# Verifica che il nuovo acquisition sia attivo
-cscli metrics | grep proxmox
+# Verifica che CrowdSec sia partito senza errori
+systemctl is-active crowdsec
+journalctl -u crowdsec -n 10 --no-pager | grep -E "level=fatal|level=error|Started"
+# Atteso: "Started crowdsec.service" senza fatal
+
+# Verifica metriche — deve mostrare acquisitions attive
+cscli metrics | grep -A5 "Acquisition"
 ```
 
 > ℹ️ **Nota:** I log di pveproxy hanno formato HTTP access log compatibile con il parser nginx. Questo permette a CrowdSec di rilevare scan/brute force sulla Web UI Proxmox (porta 8006) senza parser dedicato.
@@ -443,46 +460,49 @@ SOC-01 (192.168.68.200)                vm-103 (192.168.68.204)
                                        └────────────────────────┘
 ```
 
-### 7.2 Configurazione notification plugin CrowdSec (syslog output)
+### 7.2 Configurazione rsyslog forwarding su SOC-01
 
-CrowdSec supporta plugin di notifica nativi. Useremo il plugin `http` in modalità syslog, oppure rsyslog locale per il forwarding.
+CrowdSec scrive i propri log su file in `/var/log/crowdsec.log` (non in una subdirectory). rsyslog monitora quel file e forwarda ogni riga relativa a decisioni di ban a Wazuh via UDP 514.
 
-**Metodo 1 — rsyslog forwarding (più semplice e robusto):**
+> ⚠️ **Tre errori comuni da evitare (verificati in produzione):**
+> 1. **Path sbagliato:** il log è `/var/log/crowdsec.log`, **non** `/var/log/crowdsec/crowdsec.log`
+> 2. **Template sbagliato:** usare `RSYSLOG_TraditionalForwardFormat` (RFC 3164). Il template `RSYSLOG_SyslogProtocol23Format` produce RFC 5424 (con version field `1` nel payload) che `wazuh-remoted` scarta silenziosamente senza errori
+> 3. **Tag senza due punti:** il `Tag` deve terminare con `:` (es. `Tag="crowdsec:"`) — senza il separatore, Wazuh non estrae correttamente il `program_name` e il decoder non scatta
 
 ```bash
 # Su SOC-01
 
-# CrowdSec scrive i log in /var/log/crowdsec/crowdsec.log
-# Configura rsyslog per forwardare le righe CrowdSec a Wazuh
+# Verifica che il file di log esista e abbia contenuto
+ls -la /var/log/crowdsec.log
+tail -5 /var/log/crowdsec.log
+# Deve mostrare righe con level=info e msg="... ban on Ip ..."
 
-cat > /etc/rsyslog.d/50-crowdsec-wazuh.conf << 'EOF'
-# Forwarding CrowdSec decisions a Wazuh su vm-103
-# Filtra solo le righe contenenti "ban" o "decision" nei log CrowdSec
+# Crea configurazione rsyslog forwarding
+cat > /etc/rsyslog.d/50-crowdsec-wazuh.conf << 'ENDOFFILE'
 module(load="imfile" Mode="inotify")
 
 input(type="imfile"
-      File="/var/log/crowdsec/crowdsec.log"
-      Tag="crowdsec"
+      File="/var/log/crowdsec.log"
+      Tag="crowdsec:"
       Severity="warning"
       Facility="local3")
 
-# Forward a Wazuh syslog listener
 if $programname == 'crowdsec' then {
     action(type="omfwd"
            Target="192.168.68.204"
            Port="514"
            Protocol="udp"
-           Template="RSYSLOG_SyslogProtocol23Format")
+           Template="RSYSLOG_TraditionalForwardFormat")
     stop
 }
-EOF
+ENDOFFILE
+
+# Verifica sintassi — nessun output = OK
+rsyslogd -N1 2>&1 | grep -i error
 
 # Riavvia rsyslog
 systemctl restart rsyslog
-
-# Verifica configurazione rsyslog
-rsyslogd -N1
-# Atteso: nessun errore
+systemctl is-active rsyslog
 ```
 
 ### 7.3 Apertura porta syslog su vm-103
@@ -533,46 +553,49 @@ sudo ss -ulnp | grep 514
 
 ### 7.5 Decoder e regole Wazuh per eventi CrowdSec
 
+> ⚠️ **Note critiche sull'engine regex di Wazuh (OS_Regex):** Wazuh non usa PCRE ma il proprio engine OS_Regex con sintassi diversa:
+> - **`\.`** significa "qualsiasi carattere" (non `.` come in PCRE)
+> - **`.`** significa punto letterale
+> - `\s`, `\S`, `\w` **non sono supportati** — usa `\.` per "qualsiasi char"
+>
+> Il decoder root deve usare `<program_name>` (non `<prematch>^crowdsec`) per matchare sul campo `program_name` estratto dall'header syslog RFC3164.
+
+Il formato reale dei log CrowdSec è:
+```
+Apr 21 20:56:03 soc-01 crowdsec: time="..." level=info msg="(machine-id/cscli) scenario by ip X.X.X.X : 2m ban on Ip X.X.X.X"
+```
+
 ```bash
 # Su vm-103 (192.168.68.204) via SSH
 
 # Crea decoder per i log CrowdSec
-sudo nano /var/ossec/etc/decoders/crowdsec-decoder.xml
-```
-
-```xml
-<!-- Decoder per eventi CrowdSec via syslog -->
+sudo tee /var/ossec/etc/decoders/crowdsec-decoder.xml << 'EOF'
+<!-- Decoder per eventi CrowdSec via syslog — HomeSOC -->
+<!-- Nota: usa <program_name> (non <prematch>) per matchare sull'header syslog -->
+<!-- Nota: OS_Regex usa \. per "qualsiasi carattere", non il punto . -->
 <decoder name="crowdsec">
-  <prematch>^crowdsec</prematch>
+  <program_name>crowdsec</program_name>
 </decoder>
 
 <decoder name="crowdsec-ban">
   <parent>crowdsec</parent>
-  <prematch>Ban</prematch>
-  <regex>Ban\s(\S+)\s.*for\s(\S+)\s.*by\s(\S+)</regex>
-  <order>srcip, duration, scenario</order>
+  <regex>\) (\.+) by ip (\.+) : (\.+) ban on Ip</regex>
+  <order>scenario, srcip, duration</order>
 </decoder>
-
-<decoder name="crowdsec-unban">
-  <parent>crowdsec</parent>
-  <prematch>Unban</prematch>
-  <regex>Unban\s(\S+)</regex>
-  <order>srcip</order>
-</decoder>
+EOF
 ```
 
 ```bash
 # Crea regole custom per alert CrowdSec
-sudo nano /var/ossec/etc/rules/crowdsec-rules.xml
-```
-
-```xml
+sudo tee /var/ossec/etc/rules/crowdsec-rules.xml << 'EOF'
 <!-- Regole Wazuh per eventi CrowdSec — HomeSOC -->
+<!-- Nota: decoded_as punta al decoder parent "crowdsec" + match sul testo -->
 <group name="crowdsec,">
 
   <!-- Ban automatico — IP bloccato da CrowdSec -->
   <rule id="100050" level="8">
-    <decoded_as>crowdsec-ban</decoded_as>
+    <decoded_as>crowdsec</decoded_as>
+    <match>ban on Ip</match>
     <description>CrowdSec: IP $(srcip) bannato — scenario: $(scenario)</description>
     <mitre>
       <id>T1110.001</id>
@@ -599,42 +622,50 @@ sudo nano /var/ossec/etc/rules/crowdsec-rules.xml
     <group>crowdsec_ban,threat_intel,</group>
   </rule>
 
-  <!-- Unban — IP rilasciato dopo scadenza ban -->
-  <rule id="100053" level="3">
-    <decoded_as>crowdsec-unban</decoded_as>
-    <description>CrowdSec: IP $(srcip) rimosso dalla blocklist (ban scaduto)</description>
-    <group>crowdsec_unban,</group>
-  </rule>
-
 </group>
+EOF
 ```
 
 ```bash
-# Verifica sintassi regole
-sudo /var/ossec/bin/ossec-analysisd -t
-# Atteso: nessun errore
+# Verifica sintassi con wazuh-logtest usando la riga reale del log
+sudo /var/ossec/bin/wazuh-logtest
+# Quando appare il prompt, incolla questa riga (è il formato reale prodotto da CrowdSec):
+# Apr 21 20:56:03 soc-01 crowdsec: time="21-04-2026 20:56:03" level=info msg="(machine-id/cscli) crowdsecurity/ssh-bf by ip 198.51.100.1 : 2m ban on Ip 198.51.100.1"
+#
+# Atteso:
+# Phase 2: name='crowdsec', srcip='198.51.100.1', scenario='crowdsecurity/ssh-bf', duration='2m'
+# Phase 3: Rule 100051, level 10
 
-# Ricarica regole senza riavvio completo
-sudo systemctl reload wazuh-manager
+# Riavvia Wazuh Manager per caricare decoder e regole
+sudo systemctl restart wazuh-manager
 ```
 
 ### 7.6 Test integrazione syslog → Wazuh
 
 ```bash
-# Su SOC-01 — genera un evento CrowdSec di test
-# Aggiungi e rimuovi un ban di test
+# Su SOC-01 — aggiungi un ban di test (IP da range RFC5737 — documentazione)
 cscli decisions add --ip 198.51.100.99 --duration 2m --reason "test-wazuh-integration"
 
-# Attendi 10-15 secondi poi verifica che l'alert sia arrivato su Wazuh
+# Verifica che rsyslog abbia trasmesso il pacchetto UDP (su SOC-01)
+tcpdump -i any -n udp port 514 -c 4 -v
+# Deve mostrare: 192.168.68.200 → 192.168.68.204:514 con "crowdsec:" nel payload
+
+# Attendi 15 secondi poi verifica alert su Wazuh (su vm-103)
+sudo grep "bannato\|brute force" /var/ossec/logs/alerts/alerts.log | tail -5
+# Deve mostrare: Rule 100050, level 8, Src IP: 198.51.100.99
+
+# Test UC-01 — scenario ssh-bf (rule 100051, level 10)
+cscli decisions add --ip 198.51.100.11 --duration 2m --reason "crowdsecurity/ssh-bf"
 # Su vm-103:
-sudo grep "CrowdSec" /var/ossec/logs/alerts/alerts.log | tail -5
-# Deve mostrare un alert con rule.id 100050 o 100051
+sudo grep "198.51.100.11" /var/ossec/logs/alerts/alerts.log
+# Deve mostrare: Rule 100051, level 10 — UC-01
 
 # Cleanup
 cscli decisions delete --ip 198.51.100.99
+cscli decisions delete --ip 198.51.100.11
 ```
 
-> ✅ **Checkpoint:** Se `alerts.log` mostra l'evento, la pipeline CrowdSec → rsyslog → Wazuh è operativa.
+> ✅ **Checkpoint:** Se `alerts.log` mostra Rule 100051 level 10, la pipeline CrowdSec → rsyslog → Wazuh è completamente operativa e UC-01 è implementato.
 
 ---
 
@@ -815,7 +846,7 @@ Aggiungi la riga:
 
 ```cron
 # Aggiornamento CrowdSec Hub ogni giorno alle 03:00
-0 3 * * * /usr/bin/cscli hub update && /usr/bin/cscli hub upgrade --force >> /var/log/crowdsec/hub-update.log 2>&1
+0 3 * * * /usr/bin/cscli hub update && /usr/bin/cscli hub upgrade --force >> /var/log/crowdsec.log 2>&1
 ```
 
 ---
@@ -836,7 +867,8 @@ Aggiungi la riga:
 - [ ] `cscli scenarios list` → ssh-bf, ssh-slow-bf presenti
 
 **Acquisitions:**
-- [ ] `/etc/crowdsec/acquis.yaml` contiene `/var/log/auth.log`
+- [ ] `/etc/crowdsec/acquis.yaml` non contiene il campo `tags:` (causa errore fatale in CrowdSec v1.6+)
+- [ ] `/etc/crowdsec/acquis.yaml` contiene `source: journalctl` con filter `_SYSTEMD_UNIT=ssh.service` (Debian 13)
 - [ ] `/etc/crowdsec/acquis.yaml` contiene `/var/log/pveproxy/access.log`
 - [ ] `cscli metrics` mostra parser hits > 0
 
@@ -851,14 +883,16 @@ Aggiungi la riga:
 - [ ] `cscli decisions list` mostra decisioni (anche 0 è OK se nessun attacco recente)
 
 **Integrazione Wazuh:**
-- [ ] `/etc/rsyslog.d/50-crowdsec-wazuh.conf` presente
+- [ ] `/etc/rsyslog.d/50-crowdsec-wazuh.conf` presente con `File="/var/log/crowdsec.log"` e `Tag="crowdsec:"`
+- [ ] Template rsyslog: `RSYSLOG_TraditionalForwardFormat` (RFC 3164 — non SyslogProtocol23Format)
+- [ ] `rsyslogd -N1` → nessun errore
 - [ ] `systemctl is-active rsyslog` → `active`
 - [ ] Porta 514/udp aperta su vm-103 per 192.168.68.200 — `sudo ufw status | grep 514`
-- [ ] Wazuh logcollector configurato con `<remote>` syslog 514/udp
-- [ ] Decoder `crowdsec-decoder.xml` presente in `/var/ossec/etc/decoders/`
-- [ ] Regole `crowdsec-rules.xml` presenti in `/var/ossec/etc/rules/`
-- [ ] `sudo /var/ossec/bin/ossec-analysisd -t` → nessun errore
-- [ ] Test ban → alert rule 100050 o 100051 visibile in Wazuh Dashboard
+- [ ] Wazuh logcollector configurato con `<remote>` syslog 514/udp — `sudo ss -ulnp | grep 514` mostra `0.0.0.0:514`
+- [ ] Decoder usa `<program_name>crowdsec</program_name>` e regex OS_Regex con `\.+`
+- [ ] `wazuh-logtest` con riga reale CrowdSec → Phase 2 mostra `srcip`, `scenario`, `duration`
+- [ ] Test ban → alert rule 100050 level 8 in `alerts.log`
+- [ ] Test ssh-bf → alert rule 100051 level 10 in `alerts.log`
 
 **Protezione SSH (UC-01):**
 - [ ] Test brute force simulato → IP bannato da CrowdSec in < 30 secondi
@@ -894,6 +928,20 @@ echo "=== Ultimi alert CrowdSec ===" && sudo grep -i crowdsec /var/ossec/logs/al
 
 ## 12. Troubleshooting
 
+### CrowdSec agent non parte — errore "field tags not found"
+
+```bash
+# Su SOC-01
+journalctl -u crowdsec -n 20 --no-pager | grep fatal
+# Se vedi: "field tags not found in type fileacquisition.FileConfiguration"
+# Il problema è il campo tags: in acquis.yaml — non supportato in CrowdSec v1.6+
+
+# Fix: rimuovi tutti i blocchi tags: da acquis.yaml
+# Vedi sezione 4.3 per la configurazione corretta
+nano /etc/crowdsec/acquis.yaml
+systemctl restart crowdsec
+```
+
 ### CrowdSec agent non parte — errore LAPI
 
 ```bash
@@ -926,38 +974,81 @@ systemctl restart crowdsec-firewall-bouncer
 
 ### Log SSH non vengono parsati — 0 hits nel parser
 
+Su Debian 13, `/var/log/auth.log` non esiste. I log SSH sono esclusivamente nel journal.
+
 ```bash
 # Su SOC-01
+# Verifica che acquis.yaml usi journalctl (non file) per SSH
+grep -A5 "journalctl" /etc/crowdsec/acquis.yaml
+# Deve mostrare: _SYSTEMD_UNIT=ssh.service
 
-# Verifica che il file acquis.yaml punti al log corretto
-cat /etc/crowdsec/acquis.yaml | grep auth
+# Verifica che CrowdSec legga dal journal in tempo reale
+journalctl -u crowdsec --no-pager | grep "journalctl"
+# Atteso: "Running journalctl command: ... _SYSTEMD_UNIT=ssh.service"
 
-# Verifica permessi su auth.log
-ls -la /var/log/auth.log
-# crowdsec deve poterlo leggere (di solito gira come root — ok)
-
-# Test manuale del parser su una riga di log reale
-echo 'Apr 16 10:00:00 soc-01 sshd[12345]: Failed password for invalid user admin from 1.2.3.4 port 54321 ssh2' | \
+# Test manuale del parser su una riga di log reale da journal
+journalctl _SYSTEMD_UNIT=ssh.service --no-pager -n 1 | \
   cscli explain --type syslog -f -
-# Deve mostrare: scenario crowdsecurity/ssh-bf triggered
 ```
 
-### Alert non arrivano su Wazuh — syslog silenzioso
+### Alert non arrivano su Wazuh — debug layer by layer
 
+Segui questa sequenza diagnostica per isolare il punto di rottura:
+
+**Step 1 — rsyslog sta trasmettendo?**
 ```bash
-# Su SOC-01
-# Verifica che rsyslog stia effettivamente leggendo il log CrowdSec
-tail -f /var/log/crowdsec/crowdsec.log &
-# Genera un ban di test:
+# Su SOC-01 — sniffer + trigger contemporaneamente
+tcpdump -i any -n udp port 514 -c 4 -v &
 cscli decisions add --ip 198.51.100.50 --duration 1m --reason test
-# Verifica che la riga appaia entro 5 secondi nel log
 
-# Verifica che rsyslog stia forwardando
-tcpdump -i any -n udp port 514 -c 5
-# Deve mostrare pacchetti verso 192.168.68.204:514
-
-# Se nessun pacchetto: verifica rsyslog.conf
+# Se NON vedi pacchetti UDP: rsyslog non sta leggendo il file
+# Verifica path e sintassi:
 rsyslogd -N1 2>&1 | grep -i error
+cat /etc/rsyslog.d/50-crowdsec-wazuh.conf | grep File
+# Deve essere: File="/var/log/crowdsec.log"  (non /var/log/crowdsec/crowdsec.log)
+
+cscli decisions delete --ip 198.51.100.50
+```
+
+**Step 2 — il pacchetto arriva a vm-103?**
+```bash
+# Su vm-103 (con sniffer attivo su vm-103 e trigger su SOC-01)
+sudo tcpdump -i any -n udp port 514 -c 4
+
+# Se NON arriva: problema Proxmox firewall
+cat /etc/pve/firewall/103.fw 2>/dev/null
+# Se arriva ma Wazuh non lo processa: problema wazuh-remoted
+sudo ss -ulnp | grep 514
+# Deve mostrare: 0.0.0.0:514 con "wazuh-remoted"
+```
+
+**Step 3 — il formato syslog è RFC 3164?**
+```bash
+# Nel tcpdump il messaggio deve iniziare SENZA "1 " prima del timestamp:
+# CORRETTO:   Msg: Apr 21 20:56:03 soc-01 crowdsec: time=...
+# SBAGLIATO:  Msg: 1 2026-04-21T20:56:03 soc-01 crowdsec time=...
+# (il "1" indica RFC 5424 — Wazuh lo scarta silenziosamente)
+
+# Fix: verifica che il template in rsyslog sia TraditionalForwardFormat
+grep Template /etc/rsyslog.d/50-crowdsec-wazuh.conf
+# Deve mostrare: Template="RSYSLOG_TraditionalForwardFormat"
+```
+
+**Step 4 — il decoder matcha?**
+```bash
+# Su vm-103 — test interattivo con la stringa reale
+sudo /var/ossec/bin/wazuh-logtest
+# Incolla una riga reale dal log:
+# Apr 21 20:56:03 soc-01 crowdsec: time="..." level=info msg="(...) scenario by ip X.X.X.X : 2m ban on Ip X.X.X.X"
+
+# Se Phase 2 mostra "No decoder matched":
+# - Verifica che il decoder usi <program_name>crowdsec</program_name>
+# - Verifica che il Tag in rsyslog sia "crowdsec:" (con due punti)
+
+# Se Phase 2 mostra solo il parent "crowdsec" senza srcip/scenario:
+# - Verifica che il regex usi \.+ (non .+ — OS_Regex usa \. per "qualsiasi char")
+sudo cat /var/ossec/etc/decoders/crowdsec-decoder.xml | grep regex
+# Deve contenere: \.+ (backslash-punto-plus)
 ```
 
 ### IP bannato ma ancora raggiungibile — nftables non attivo
@@ -975,19 +1066,6 @@ apt install crowdsec-firewall-bouncer-iptables -y
 systemctl enable --now crowdsec-firewall-bouncer
 ```
 
-### Wazuh non riconosce il decoder CrowdSec
-
-```bash
-# Su vm-103
-# Verifica sintassi XML decoder
-sudo /var/ossec/bin/ossec-analysisd -t 2>&1 | grep -i "crowdsec\|error"
-
-# Test manuale decoder con wazuh-logtest
-echo "crowdsec Ban 1.2.3.4 for 4h by crowdsecurity/ssh-bf" | \
-  sudo /var/ossec/bin/wazuh-logtest
-# Deve mostrare: Decoder matched: crowdsec-ban + Rule fired: 100051
-```
-
 ---
 
 ## Prossimi passi
@@ -997,7 +1075,7 @@ Dopo aver completato e verificato questa checklist:
 1. Commit su Git:
    ```bash
    git add runbooks/crowdsec-deploy.md
-   git commit -m "runbooks(crowdsec): Phase 3 — CrowdSec su SOC-01, bouncer, integrazione Wazuh v1.0"
+   git commit -m "runbooks(crowdsec): v1.1 — fix post-deploy: acquis.yaml, rsyslog RFC3164, decoder OS_Regex, regole Wazuh"
    ```
 
 2. Aggiornare `docs/01-threat-model.md`:
@@ -1017,5 +1095,5 @@ Dopo aver completato e verificato questa checklist:
 
 ---
 
-*File: `runbooks/crowdsec-deploy.md` · v1.0 · Aprile 2026*  
+*File: `runbooks/crowdsec-deploy.md` · v1.1 · Aprile 2026*  
 *HomeSOC Project — Alessandro · LM Sicurezza Informatica · UniMI*
