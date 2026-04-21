@@ -10,8 +10,9 @@
 **Changelog:**
 - v1.0 — Aprile 2026 — Prima stesura
 - v1.1 — Aprile 2026 — Correzione modelli Deco (XE75/XE75 Pro), termostati → Google Nest Learning 3a gen, NAS → WD My Cloud Home, aggiornamento R-06, aggiunta sezione CIA
-- v1.3 — Aprile 2026 — Aggiornamento risk register post Fase 3: R-01/R-02/R-08/R-10 Parziale Mitigato (UC operativi + Slack), R-14 nota aggiornata (Wazuh manager operativo, POS enrollment pianificato)
 - v1.2 — Aprile 2026 — Correzione subnet (192.168.68.0/24), IP/MAC da scan CSV, identificazione ESP_EF1867 (luce smart sala), PAX Computer come hardware POS, Narwal FN-LINK, due Roborock distinti, aggiornamento stati risk register (R-06, R-11, R-15, R-16, R-17), NEG-03 identificato come POS mobile, note DoH Deco BE65
+- v1.3 — Aprile 2026 — Aggiornamento risk register post Fase 3: R-01/R-02/R-08/R-10 Parziale Mitigato (UC operativi + Slack), R-14 nota aggiornata (Wazuh manager operativo, POS enrollment pianificato)
+- v1.4 — Aprile 2026 — R-10 → Mitigato ✅: CrowdSec cs-firewall-bouncer attivo su SOC-01, pipeline CrowdSec → Wazuh verificata in produzione; aggiornamento controlli sez. 2.9
 
 ---
 
@@ -249,7 +250,7 @@
 | Denial of Service | Server SOC irraggiungibile — perdita visibilità su tutta la rete | 1 | 3 | **MEDIO** |
 | Repudiation | Log Wazuh manomessi — eventi non più attendibili | 1 | 3 | **MEDIO** |
 
-**Controlli previsti:** SSH hardening (no root login, solo chiavi pubbliche), fail2ban, snapshot Proxmox automatici, accesso solo LAN, Tailscale per accesso remoto.
+**Controlli previsti:** SSH hardening (no root login, solo chiavi pubbliche), **CrowdSec cs-firewall-bouncer** (blocco attivo IP brute force via nftables), snapshot Proxmox automatici, accesso solo LAN, Tailscale per accesso remoto.
 
 ### 2.10 DNS Resolver — NextDNS
 
@@ -281,7 +282,7 @@
 | R-07 | CAM-01→07 (Telecamere) | Information Disclosure — stream video verso cloud | 2 | 3 | **ALTO (6)** | Blocco internet telecamere (OPNsense futuro), firmware aggiornato | Futuro | Posticipato |
 | R-08 | END-05 (MacBook) | Information Disclosure — keylogger/screen capture | 2 | 3 | **ALTO (6)** | Wazuh agent, FIM, controllo processi | Fase 3 | **Parziale Mitigato** — FIM UC-03 operativo, alert Slack attivi su modifiche file critici. Controllo processi non ancora implementato. |
 | R-09 | SOC-01 (Server HomeSOC) | Tampering — compromissione server monitoring | 1 | 3 | **MEDIO (3)** | SSH hardening, no root, fail2ban, snapshot Proxmox | Fase 2 | Aperto |
-| R-10 | SOC-01 (Server HomeSOC) | Elevation of Privilege — accesso SSH non autorizzato | 1 | 3 | **MEDIO (3)** | Chiavi pubbliche only, fail2ban | Fase 2 | **Parziale Mitigato** — SSH con chiavi pubbliche attivo, Wazuh UC-01 brute force detection (rule 100001) operativo, alert Slack attivo. CrowdSec pianificato (crowdsec-deploy.md). |
+| R-10 | SOC-01 (Server HomeSOC) | Elevation of Privilege — accesso SSH non autorizzato | 1 | 3 | **MEDIO (3)** | Chiavi pubbliche only, CrowdSec cs-firewall-bouncer | Fase 3 | **Mitigato ✅ — CrowdSec attivo su SOC-01: blocco IP via nftables + detection Wazuh UC-01 (rule 100051, level 10, T1110.001). Pipeline CrowdSec → rsyslog → Wazuh verificata in produzione (21/04/2026).** |
 | R-11 | AUTO-04 (ESP_EF1867) | Spoofing / Info Disclosure — device non identificato | 2 | 2 | **MEDIO (4)** | Identificazione fisica MAC OUI, analisi traffico Wazuh | Immediato | **Chiuso — identificato: luce smart sala (Espressif/Tuya). Rischio residuo assimilato a Tuya cloud (cfr. R-01).** |
 | R-12 | IOT-01, IOT-02 (Robot cinesi) | Tampering — firmware OTA compromesso | 1 | 3 | **MEDIO (3)** | Blocco OTA automatici via DNS, monitoraggio | Fase 3 | Aperto |
 | R-13 | CAM-01→07 (Telecamere) | Tampering — firmware OTA compromesso | 1 | 3 | **MEDIO (3)** | Firmware aggiornato manualmente | Fase 3 | Aperto |
@@ -407,5 +408,5 @@ La triade **CIA** (Confidentiality · Integrity · Availability) è declinata pe
 
 ---
 
-*File: `docs/01-threat-model.md` · v1.3 · Aprile 2026*
+*File: `docs/01-threat-model.md` · v1.4 · Aprile 2026*
 *HomeSOC Project — Alessandro · LM Sicurezza Informatica · UniMI*
