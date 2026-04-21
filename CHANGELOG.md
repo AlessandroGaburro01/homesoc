@@ -7,19 +7,35 @@ Format: [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/)  
 
 ## [Unreleased]
 
-## [0.4.0] — 2026-04-16
+## [0.5.0] — 2026-04-20
 
 ### Added
-- `runbooks/wazuh-deploy.md` — Fase 3: deploy Wazuh 4.x single-node su vm-103 (Ubuntu 22.04, 4 vCPU / 6 GB / 64 GB, IP `192.168.68.204`). Comprende: Wazuh Manager + Indexer + Dashboard, enrollment agent macOS (END-05), FIM su home directory MacBook, ingestion log NextDNS via API, script rogue device detection, detection rules custom UC-01/02/03/04/06 mappate su MITRE ATT&CK.
-- `runbooks/crowdsec-deploy.md` — Fase 3: deploy CrowdSec direttamente su SOC-01 host Proxmox (`192.168.68.200`). Comprende: agent + cs-firewall-bouncer (nftables), collections ssh-bf/linux/syslog, blocklist Hub globale, pipeline CrowdSec → rsyslog → Wazuh syslog (alert rule 100050-100053), sezione didattica modello agent/LAPI/bouncer vs fail2ban.
+- `wazuh-slack.md` — Runbook v1.0: integrazione Wazuh → Slack, script custom per messaggi contestuali per UC-01/03/04/06 (level ≥ 10), roadmap notifiche future (agent disconnect, Uptime Kuma, Greenbone, CrowdSec)
+- `integrations/slack.py` — Script Python custom che sostituisce lo script built-in Wazuh: routing per rule ID, messaggi strutturati con emoji/campi/MITRE tag per ogni use case, fallback generico per rule non mappate
 
 ### Changed
-- `docs/01-threat-model.md` — Aggiornato a v1.3: R-09 e R-10 → stato Mitigato (runbook). Controlli fail2ban → CrowdSec cs-firewall-bouncer in sez. 2.9 e risk register. UC-01 risposta prevista aggiornata.
+- `docs/01-threat-model.md` — Updated to v1.3: risk register aggiornato con stato deploy Fase 3 — R-01 Parziale Mitigato (UC-02 operativo), R-02 Parziale Mitigato (UC-03 FIM + Slack), R-08 Parziale Mitigato (FIM operativo), R-10 Parziale Mitigato (UC-01 SSH brute force + Slack), R-14 nota aggiornata (Wazuh manager operativo, POS enrollment pianificato)
 
 ### Notes
-- Fase 3 runbook completati. Deployment effettivo su hardware da eseguire (prerequisito: upgrade RAM SOC-01 a 32 GB per vm-103 Wazuh).
-- Criterio di chiusura Fase 3: test brute force SSH → alert rule 100051 visibile in Wazuh Dashboard.
-- Decisione architetturale: CrowdSec deployato su SOC-01 anche senza servizi internet-facing — protezione SSH LAN (UC-01) + blocklist globale Hub + preparazione per esposizione futura (reverse proxy, VPN). Rationale documentato in `crowdsec-deploy.md` sez. 1.3.
+- Fase 3 SIEM & Detection: Wazuh operativo (v1.2), integrazione Slack operativa (v1.0), CrowdSec in corso
+- Alert Slack attivi: UC-01 (SSH brute force), UC-03 (FIM macOS), UC-04 (NAS port monitor), UC-06 (Rogue device)
+- UC-02 (NextDNS beaconing, level 8) sotto il threshold Slack — monitorato solo su Dashboard
+- Script `integrations/slack.py` da copiare in `/var/ossec/integrations/slack.py` su vm-103 dopo ogni reinstall
+
+## [0.4.0] — 2026-04-17
+
+### Added
+- `proxmox-setup.md` — Runbook v1.0: Proxmox VE setup su SOC-01 (GMKtec M5 Ultra), configurazione base, network bridge, storage pool, snapshot policy
+- `homeassistant-deploy.md` — Runbook v1.0: Home Assistant OS su vm-100, integrazione dispositivi LAN (Shelly, Google Nest, robot), DHCP reservation
+- `uptimekuma-deploy.md` — Runbook v1.0: Uptime Kuma + Portainer su ct-101, monitoring ICMP/HTTP per tutti gli asset critici (SOC-01, NAS, MacBook, POS, Greenbone, Wazuh)
+- `greenbone-deploy.md` — Runbook v1.1: Greenbone Community Edition su ct-102 (LXC privileged, nesting=1 keyctl=1 per Docker), scan periodici LAN, NVT feed sync (30-90 min atteso al primo boot)
+- `wazuh-deploy.md` — Runbook v1.2: Wazuh 4.x single-node su vm-103, agent MacBook Pro M1 (END-05), 5 UC custom (UC-01/02/03/04/06), decoder custom, FIM workaround macOS (MD5/diff script), NAS port monitor script
+
+### Notes
+- Fase 2 completata: Proxmox, Home Assistant, Uptime Kuma, Greenbone operativi
+- Fase 3 avviata: Wazuh operativo con tutti gli UC attivi e testati
+- RAM SOC-01 aggiornata a 32 GB (necessario per vm-103 Wazuh Indexer)
+- Greenbone LXC: requisito critico — modalità privileged + features nesting=1,keyctl=1 per Docker
 
 ## [0.3.0] — 2026-04-11
 

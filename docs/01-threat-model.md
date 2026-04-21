@@ -10,8 +10,8 @@
 **Changelog:**
 - v1.0 — Aprile 2026 — Prima stesura
 - v1.1 — Aprile 2026 — Correzione modelli Deco (XE75/XE75 Pro), termostati → Google Nest Learning 3a gen, NAS → WD My Cloud Home, aggiornamento R-06, aggiunta sezione CIA
+- v1.3 — Aprile 2026 — Aggiornamento risk register post Fase 3: R-01/R-02/R-08/R-10 Parziale Mitigato (UC operativi + Slack), R-14 nota aggiornata (Wazuh manager operativo, POS enrollment pianificato)
 - v1.2 — Aprile 2026 — Correzione subnet (192.168.68.0/24), IP/MAC da scan CSV, identificazione ESP_EF1867 (luce smart sala), PAX Computer come hardware POS, Narwal FN-LINK, due Roborock distinti, aggiornamento stati risk register (R-06, R-11, R-15, R-16, R-17), NEG-03 identificato come POS mobile, note DoH Deco BE65
-- v1.3 — Aprile 2026 — Aggiornamento R-09, R-10 e sez. 2.9: risposta fail2ban → CrowdSec cs-firewall-bouncer (decisione architetturale Fase 3 — `runbooks/crowdsec-deploy.md`). R-09 e R-10 → stato Mitigato (runbook). UC-01 risposta prevista aggiornata.
 
 ---
 
@@ -249,7 +249,7 @@
 | Denial of Service | Server SOC irraggiungibile — perdita visibilità su tutta la rete | 1 | 3 | **MEDIO** |
 | Repudiation | Log Wazuh manomessi — eventi non più attendibili | 1 | 3 | **MEDIO** |
 
-**Controlli previsti:** SSH hardening (no root login, solo chiavi pubbliche), **CrowdSec cs-firewall-bouncer** (IPS — ban automatico brute force SSH + blocklist globale Hub), snapshot Proxmox automatici, accesso solo LAN, Tailscale per accesso remoto. *[Decisione v1.3: fail2ban sostituito da CrowdSec — vedi `runbooks/crowdsec-deploy.md`]*
+**Controlli previsti:** SSH hardening (no root login, solo chiavi pubbliche), fail2ban, snapshot Proxmox automatici, accesso solo LAN, Tailscale per accesso remoto.
 
 ### 2.10 DNS Resolver — NextDNS
 
@@ -272,20 +272,20 @@
 
 | ID | Asset | Minaccia STRIDE | P | I | Rischio | Controllo previsto | Fase | Stato |
 |---|---|---|---|---|---|---|---|---|
-| R-01 | IOT-01, IOT-02 (Robot cinesi) | Information Disclosure — beaconing cloud cinese | 3 | 2 | **ALTO (6)** | NextDNS blocco IoC, VLAN IoT (OPNsense futuro), Wazuh alert | Fase 3 | Aperto |
-| R-02 | END-05 (MacBook) | Elevation of Privilege — malware, lateral movement | 2 | 3 | **ALTO (6)** | Wazuh agent macOS, FIM home dir, ClamAV | Fase 3 | Aperto |
+| R-01 | IOT-01, IOT-02 (Robot cinesi) | Information Disclosure — beaconing cloud cinese | 3 | 2 | **ALTO (6)** | NextDNS blocco IoC, VLAN IoT (OPNsense futuro), Wazuh alert | Fase 3 | **Parziale Mitigato** — NextDNS blocco attivo, Wazuh UC-02 (rule 100010) operativo. VLAN posticipato a OPNsense. |
+| R-02 | END-05 (MacBook) | Elevation of Privilege — malware, lateral movement | 2 | 3 | **ALTO (6)** | Wazuh agent macOS, FIM home dir, ClamAV | Fase 3 | **Parziale Mitigato** — Wazuh agent END-05 attivo, FIM UC-03 (rule 100020/100023) operativo, alert Slack attivi. ClamAV non ancora deployato. |
 | R-03 | NEG-01, NEG-02 (POS/Cassa) | Tampering — malware POS, RAM scraper | 2 | 3 | **ALTO (6)** | Greenbone scan, Wazuh monitoring | Fase 2 | Aperto |
 | R-04 | NEG-01, NEG-02 (POS/Cassa) | Denial of Service — interruzione attività negozio | 2 | 3 | **ALTO (6)** | Greenbone scan, Uptime Kuma | Fase 2 | Aperto |
 | R-05 | NEG-01, NEG-02 (POS/Cassa) | Lateral Movement da IoT su rete flat | 2 | 3 | **ALTO (6)** | Isolamento VLAN con OPNsense + switch managed | Futuro | Posticipato — hardware insufficiente |
 | R-06 | NAS-01 (WD My Cloud Home) | Information Disclosure — account WD compromesso | 2 | 3 | **ALTO (6)** | 2FA account WD, password robusta, monitoraggio Wazuh | Immediato | **Mitigato ✅ — 2FA abilitato 11/04/2026** |
 | R-07 | CAM-01→07 (Telecamere) | Information Disclosure — stream video verso cloud | 2 | 3 | **ALTO (6)** | Blocco internet telecamere (OPNsense futuro), firmware aggiornato | Futuro | Posticipato |
-| R-08 | END-05 (MacBook) | Information Disclosure — keylogger/screen capture | 2 | 3 | **ALTO (6)** | Wazuh agent, FIM, controllo processi | Fase 3 | Aperto |
-| R-09 | SOC-01 (Server HomeSOC) | Tampering — compromissione server monitoring | 1 | 3 | **MEDIO (3)** | SSH hardening, no root, CrowdSec IPS, snapshot Proxmox | Fase 3 | **Mitigato (runbook) ✅ — `crowdsec-deploy.md` + `wazuh-deploy.md`** |
-| R-10 | SOC-01 (Server HomeSOC) | Elevation of Privilege — accesso SSH non autorizzato | 1 | 3 | **MEDIO (3)** | Chiavi pubbliche only, CrowdSec cs-firewall-bouncer (ban automatico brute force — UC-01) | Fase 3 | **Mitigato (runbook) ✅ — `crowdsec-deploy.md`** |
+| R-08 | END-05 (MacBook) | Information Disclosure — keylogger/screen capture | 2 | 3 | **ALTO (6)** | Wazuh agent, FIM, controllo processi | Fase 3 | **Parziale Mitigato** — FIM UC-03 operativo, alert Slack attivi su modifiche file critici. Controllo processi non ancora implementato. |
+| R-09 | SOC-01 (Server HomeSOC) | Tampering — compromissione server monitoring | 1 | 3 | **MEDIO (3)** | SSH hardening, no root, fail2ban, snapshot Proxmox | Fase 2 | Aperto |
+| R-10 | SOC-01 (Server HomeSOC) | Elevation of Privilege — accesso SSH non autorizzato | 1 | 3 | **MEDIO (3)** | Chiavi pubbliche only, fail2ban | Fase 2 | **Parziale Mitigato** — SSH con chiavi pubbliche attivo, Wazuh UC-01 brute force detection (rule 100001) operativo, alert Slack attivo. CrowdSec pianificato (crowdsec-deploy.md). |
 | R-11 | AUTO-04 (ESP_EF1867) | Spoofing / Info Disclosure — device non identificato | 2 | 2 | **MEDIO (4)** | Identificazione fisica MAC OUI, analisi traffico Wazuh | Immediato | **Chiuso — identificato: luce smart sala (Espressif/Tuya). Rischio residuo assimilato a Tuya cloud (cfr. R-01).** |
 | R-12 | IOT-01, IOT-02 (Robot cinesi) | Tampering — firmware OTA compromesso | 1 | 3 | **MEDIO (3)** | Blocco OTA automatici via DNS, monitoraggio | Fase 3 | Aperto |
 | R-13 | CAM-01→07 (Telecamere) | Tampering — firmware OTA compromesso | 1 | 3 | **MEDIO (3)** | Firmware aggiornato manualmente | Fase 3 | Aperto |
-| R-14 | NEG-01, NEG-02 (POS/Cassa) | Repudiation — assenza log centralizzati | 2 | 2 | **MEDIO (4)** | Wazuh log centralizzati post-deploy | Fase 3 | Aperto |
+| R-14 | NEG-01, NEG-02 (POS/Cassa) | Repudiation — assenza log centralizzati | 2 | 2 | **MEDIO (4)** | Wazuh log centralizzati post-deploy | Fase 3 | Aperto — Wazuh manager operativo, agent MacBook (END-05) enrollato. Enrollment agenti POS/Cassa pianificato Fase 3. |
 | R-15 | AUTO-01 (Shelly) | Elevation of Privilege — controllo fisico dispositivi | 1 | 2 | **BASSO (2)** | Nessun cloud Shelly, auth UI web non abilitata (compatibilità) | Immediato | **Accettato — auth web disabilitata per mantenere controllo locale. Mitigazione futura: VLAN IoT con OPNsense.** |
 | R-16 | CLIM-01, CLIM-02 (Nest Learning) | Information Disclosure — dati abitudini verso Google | 2 | 1 | **BASSO (2)** | Account Google con 2FA | Immediato | **Mitigato ✅ — 2FA Google confermato 11/04/2026** |
 | R-17 | INF-01→05 (Deco mesh) | Spoofing — DNS poisoning | 1 | 2 | **BASSO (2)** | NextDNS DoH, DNSSEC | Immediato | **Parziale — Deco BE65 non supporta DoH a livello router (firmware con DoH in beta). DoH attivo solo su device con profilo NextDNS diretto. DNSSEC attivo. Rivalutare a firmware rilasciato.** |
