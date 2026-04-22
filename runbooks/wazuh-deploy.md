@@ -1,7 +1,7 @@
 # Runbook — Wazuh SIEM Deploy (vm-103)
 **Progetto:** HomeSOC · Domestic Security Operations Centre  
 **File:** `runbooks/wazuh-deploy.md`  
-**Versione:** 1.2 — Aprile 2026  
+**Versione:** 1.3 — Aprile 2026  
 **Autore:** Alessandro · LM Sicurezza Informatica · UniMI  
 **Fase:** 3 — SIEM & Detection  
 **Prerequisito:** `runbooks/proxmox-setup.md` completato — SOC-01 operativo, pool `phase2` creato; RAM SOC-01 aggiornata a **32 GB** (vm-103 non entra nel layout a 16 GB)
@@ -9,6 +9,7 @@
 > **Scopo:** Creare e configurare `vm-103` su Proxmox VE come VM Ubuntu 22.04 LTS, installare Wazuh 4.x in configurazione single-node (Manager + Indexer + Dashboard), enrollare il Wazuh Agent sul MacBook Pro M1 (END-05), e deployare le detection rule custom per UC-01, UC-02, UC-03, UC-04 e UC-06 mappate sul threat model del progetto. Al termine di questo runbook Wazuh deve essere operativo, la Dashboard deve mostrare eventi attivi dal MacBook, e tutte le regole custom devono essere caricate e testate.
 
 **Changelog:**
+- v1.3 — Aprile 2026 — Fix FP UC-04: nas-monitor.sh guard NAS offline (previene FP post-reboot), local_rules.xml v1.3 (regole 100030/100031 riscritte per decoder nas-monitor-fields, aggiunta rule 100032 nas_offline L3, fix frequency/timeframe come attributi su 100001/100002/100011)
 - v1.2 — Aprile 2026 — Fase 3 completa: FIM workaround macOS (script MD5/diff, rule 100023), UC-04 operativo (NAS port monitor, script nas-monitor.sh, regole 100030/100031), fix username alessandrogaburro, decoder fim-macos e nas-monitor, tutti UC operativi
 - v1.1 — Aprile 2026 — Fix post-deploy: decoder nextdns (parent/child + pcre2), decoder rogue-device (program_name), script nextdns (campo status/domain/reasons), regola 100041 (frequency/timeframe attributi), nmap parser, nota FDA macOS UC-03, UC-04 deferred (WD NAS no syslog)
 - v1.0 — Aprile 2026 — Prima stesura
@@ -925,49 +926,55 @@ sudo tee /var/ossec/etc/rules/local_rules.xml << 'RULES_EOF'
 
 
   <!-- ============================================================
-       UC-04 — Accesso Non Autorizzato NAS WD My Cloud (T1078)
-       ⚠️ STATO: DEFERRED — v1.1
-       Il WD My Cloud Home NON supporta syslog nativo. L'invio di log
-       al Manager Wazuh tramite il metodo SMB/syslog previsto non è
-       realizzabile senza middleware aggiuntivo.
-       Approcci alternativi da valutare in Fase 4+:
-         a) Packet capture su vm-103 (tcpdump/Zeek) per rilevare
-            connessioni TCP:445 verso 192.168.68.90 da IP non autorizzati
-         b) Agent Wazuh su device Linux/RaspberryPi nella stessa subnet
-            che monitora il traffico ARP/netflow verso il NAS
-         c) Network tap passivo — Zeek + Wazuh integration
-       Le regole 100030/100031 rimangono nel file per riferimento
-       futuro ma non sono attive (il decoder 'syslog' non riceve
-       log dal NAS in questo deploy).
+       UC-04 — Monitoraggio Porte NAS WD My Cloud Home (T1078 / T1571)
+       Implementazione: script nmap polling ogni 30min (nas-monitor.sh)
+       Il WD My Cloud Home non supporta syslog nativo — la detection
+       avviene tramite confronto periodico delle porte esposte vs baseline.
+       Baseline Aprile 2026: 80 139 445 4430 5357 8001 8010 8543 9999 33284
+       Asset: NAS-01 192.168.68.90 (R-06)
+       Decoder: nas-monitor-decoder.xml (sezione 12.3)
+       Script: /opt/homesoc/scripts/nas-monitor.sh (sezione 12.1)
+
+       Fix v1.3: guard baseline su NAS offline aggiunto allo script.
+       Quando il NAS è irraggiungibile (es. spento di notte) lo script
+       logga nas_offline e NON aggiorna la baseline, prevenendo il FP
+       "tutte le porte appaiono nuove" al ritorno online (rilevato 2026-04-22).
        ============================================================ -->
 
-  <!-- Connessione SMB verso NAS da IP non autorizzato — REGOLA NON ATTIVA (vedi nota UC-04) -->
-  <rule id="100030" level="10">
-    <decoded_as>syslog</decoded_as>
-    <match>192.168.68.90</match>
-    <field name="dstport">445</field>
-    <field name="srcip" negate="yes" type="pcre2">
-      ^192\.168\.68\.(108|1)$
-    </field>
-    <description>UC-04 HomeSOC: Accesso SMB al NAS (192.168.68.90) da IP non autorizzato: $(srcip)</description>
+  <!-- Porta inattesa sul NAS — possibile backdoor o misconfiguration post-compromise -->
+  <rule id="100030" level="12">
+    <decoded_as>nas-monitor-fields</decoded_as>
+    <field name="nas.event">new_port</field>
+    <description>UC-04 HomeSOC: NAS $(nas.ip) — porta inattesa rilevata: $(nas.port) — possibile backdoor post-compromise</description>
     <mitre>
       <id>T1078</id>
+      <id>T1571</id>
     </mitre>
-    <group>network,nas_access,homesoc_uc04,</group>
+    <group>network,nas_monitor,homesoc_uc04,</group>
   </rule>
 
-  <!-- Multipli accessi SMB falliti verso NAS — possibile credential stuffing -->
-  <rule id="100031" level="12">
-    <if_matched_sid>100030</if_matched_sid>
-    <same_source_ip />
-    <timeframe>300</timeframe>
-    <frequency>3</frequency>
-    <description>UC-04 HomeSOC: Accessi SMB ripetuti al NAS da IP non autorizzato: $(srcip) — possibile attacco</description>
+  <!-- SMB (445) non raggiungibile sul NAS — servizio down o manomesso -->
+  <rule id="100031" level="10">
+    <decoded_as>nas-monitor-fields</decoded_as>
+    <field name="nas.event">smb_down</field>
+    <description>UC-04 HomeSOC: NAS $(nas.ip) — SMB (445) non raggiungibile — servizio down o manomesso</description>
     <mitre>
       <id>T1078</id>
-      <id>T1110</id>
     </mitre>
-    <group>network,nas_access,homesoc_uc04,</group>
+    <group>network,nas_monitor,homesoc_uc04,</group>
+  </rule>
+
+  <!-- NAS non raggiungibile durante il polling — informativo, nessuna notifica Slack -->
+  <!-- Logga quando il NAS è spento o irraggiungibile (es. spegnimento notturno) -->
+  <!-- Level 3 = solo audit trail nella Dashboard, nessun alert attivo -->
+  <rule id="100032" level="3">
+    <decoded_as>nas-monitor-fields</decoded_as>
+    <field name="nas.event">nas_offline</field>
+    <description>UC-04 HomeSOC: NAS $(nas.ip) non raggiungibile — spento o rete down (informativo)</description>
+    <mitre>
+      <id>T1078</id>
+    </mitre>
+    <group>network,nas_monitor,homesoc_uc04,</group>
   </rule>
 
 
@@ -1019,7 +1026,7 @@ sudo /var/ossec/bin/ossec-analysisd -t
 sudo systemctl reload wazuh-manager
 
 # Verifica che le regole siano caricate
-sudo grep -A 2 "100001\|100010\|100020\|100030\|100040" \
+sudo grep -A 2 "100001\|100010\|100020\|100030\|100032\|100040" \
   /var/ossec/logs/ossec.log | tail -20
 ```
 
@@ -1423,6 +1430,11 @@ sudo tee /opt/homesoc/scripts/nas-monitor.sh << 'SCRIPT_EOF'
 # File: /opt/homesoc/scripts/nas-monitor.sh
 # Cron: ogni 30 minuti
 # Output: /var/log/homesoc/nas-monitor.log
+#
+# v1.1 — Fix FP post-reboot: guard NAS offline — se nmap non trova
+#   porte aperte, logga nas_offline e termina SENZA aggiornare la
+#   baseline (previene FP "tutte le porte nuove" al ritorno online)
+# v1.0 — Prima stesura
 # ============================================================
 
 NAS_IP="192.168.68.90"
@@ -1433,6 +1445,16 @@ LOG="/var/log/homesoc/nas-monitor.log"
 CURRENT=$(nmap -p 80,139,445,4430,5357,8001,8010,8543,9999,33284 \
   --open -oG - "$NAS_IP" 2>/dev/null | \
   grep "Ports:" | grep -oP '\d+/open' | cut -d/ -f1 | sort -n | tr '\n' ' ' | sed 's/ $//')
+
+# Guard: NAS irraggiungibile o spento
+# Se nmap non trova nessuna porta aperta, il NAS è probabilmente offline.
+# NON aggiornare la baseline — altrimenti al ritorno online tutte le porte
+# appaiono "nuove" generando un false positive (rule 100030 L12).
+# Rilevato in produzione: 2026-04-22, causa spegnimento notturno NAS.
+if [ -z "$CURRENT" ]; then
+  echo "$(date -Iseconds) homesoc nas-monitor: event=\"nas_offline\" port=\"N/A\" nas=\"${NAS_IP}\" status=\"unreachable\"" >> "$LOG"
+  exit 0
+fi
 
 # Prima esecuzione: salva baseline
 if [ ! -f "$BASELINE" ]; then
@@ -1462,7 +1484,7 @@ if echo "$CLOSED_PORTS" | grep -q "445"; then
   echo "$(date -Iseconds) homesoc nas-monitor: event=\"smb_down\" port=\"445\" nas=\"${NAS_IP}\" status=\"service_missing\"" >> "$LOG"
 fi
 
-# Aggiorna baseline
+# Aggiorna baseline (il guard sopra garantisce che CURRENT non sia vuoto)
 echo "$CURRENT" > "$BASELINE"
 SCRIPT_EOF
 

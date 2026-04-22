@@ -7,6 +7,17 @@ Format: [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/)  
 
 ## [Unreleased]
 
+## [0.5.1] — 2026-04-22
+
+### Fixed
+- `runbooks/nas-monitor.sh` v1.1: aggiunto guard su NAS irraggiungibile — se nmap non trova porte aperte lo script logga `event=nas_offline` e termina senza aggiornare la baseline, prevenendo il false positive "tutte le porte appaiono nuove" al ritorno online dopo spegnimento notturno (FP rilevato e triaggiato 2026-04-22)
+- `runbooks/wazuh-deploy.md` v1.3: regole UC-04 100030/100031 riscritte per decoder `nas-monitor-fields` (sostituiscono placeholder syslog inattivo della v1.1); aggiunta rule 100032 `nas_offline` level 3 (solo audit trail, nessuna notifica Slack); fix `frequency`/`timeframe` come attributi su rule 100001, 100002, 100011 (stesso pattern del fix v1.1 già applicato a 100041)
+
+### Notes
+- FP classificato: NAS WD My Cloud Home spento di notte → baseline azzerata → al riaccensione mattutina tutte le porte baseline appaiono come "nuove" → rule 100030 (L12) triggered erroneamente. Causa root: script aggiornava baseline anche con risultato nmap vuoto. Risolto con guard `[ -z "$CURRENT" ]` prima dell'aggiornamento baseline.
+- Rule 100032 (L3) permette audit trail degli spegnimenti NAS in Dashboard senza generare alert Slack
+- Nessun impatto su altri UC o componenti
+
 ## [0.5.0] — 2026-04-20
 
 ### Added
