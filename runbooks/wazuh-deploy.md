@@ -1,7 +1,7 @@
 # Runbook — Wazuh SIEM Deploy (vm-103)
 **Progetto:** HomeSOC · Domestic Security Operations Centre  
 **File:** `runbooks/wazuh-deploy.md`  
-**Versione:** 1.3 — Aprile 2026  
+**Versione:** 1.4 — Aprile 2026  
 **Autore:** Alessandro · LM Sicurezza Informatica · UniMI  
 **Fase:** 3 — SIEM & Detection  
 **Prerequisito:** `runbooks/proxmox-setup.md` completato — SOC-01 operativo, pool `phase2` creato; RAM SOC-01 aggiornata a **32 GB** (vm-103 non entra nel layout a 16 GB)
@@ -9,6 +9,7 @@
 > **Scopo:** Creare e configurare `vm-103` su Proxmox VE come VM Ubuntu 22.04 LTS, installare Wazuh 4.x in configurazione single-node (Manager + Indexer + Dashboard), enrollare il Wazuh Agent sul MacBook Pro M1 (END-05), e deployare le detection rule custom per UC-01, UC-02, UC-03, UC-04 e UC-06 mappate sul threat model del progetto. Al termine di questo runbook Wazuh deve essere operativo, la Dashboard deve mostrare eventi attivi dal MacBook, e tutte le regole custom devono essere caricate e testate.
 
 **Changelog:**
+- v1.4 — Aprile 2026 — Fix pipeline UC-02: timestamp nextdns-fetch.sh cambiato da ISO8601 a formato syslog (`%b %e %H:%M:%S`) — il pre-decoder Wazuh non parsava ISO8601 e causava "No decoder matched"; aggiornato test wazuh-logtest in sezione 10.4. Fix rule 100001: `if_matched_sid` cambiato da 5720 a 5710 (sshd-session su Debian 13 logga "Invalid user" → rule 5710, non 5720); rule 100002 riscritta per coprire `if_matched_sid 5720` (password errata su utente valido). Aggiunto Wazuh Agent su SOC-01 (sezione 16 troubleshooting + checklist): agent v4.14.4, auth.log aggiunto al logcollector, SSH su porta 2222.
 - v1.3 — Aprile 2026 — Fix FP UC-04: nas-monitor.sh guard NAS offline (previene FP post-reboot), local_rules.xml v1.3 (regole 100030/100031 riscritte per decoder nas-monitor-fields, aggiunta rule 100032 nas_offline L3, fix frequency/timeframe come attributi su 100001/100002/100011)
 - v1.2 — Aprile 2026 — Fase 3 completa: FIM workaround macOS (script MD5/diff, rule 100023), UC-04 operativo (NAS port monitor, script nas-monitor.sh, regole 100030/100031), fix username alessandrogaburro, decoder fim-macos e nas-monitor, tutti UC operativi
 - v1.1 — Aprile 2026 — Fix post-deploy: decoder nextdns (parent/child + pcre2), decoder rogue-device (program_name), script nextdns (campo status/domain/reasons), regola 100041 (frequency/timeframe attributi), nmap parser, nota FDA macOS UC-03, UC-04 deferred (WD NAS no syslog)
@@ -794,7 +795,7 @@ sudo tee /var/ossec/etc/rules/local_rules.xml << 'RULES_EOF'
 <!--
   HomeSOC — Custom Detection Rules
   File: /var/ossec/etc/rules/local_rules.xml
-  Versione: 1.2 — Aprile 2026
+  Versione: 1.4 — Aprile 2026
   Autore: Alessandro · LM Sicurezza Informatica · UniMI
   Threat model: docs/01-threat-model.md
 -->
@@ -805,33 +806,32 @@ sudo tee /var/ossec/etc/rules/local_rules.xml << 'RULES_EOF'
   <!-- ============================================================
        UC-01 — Brute Force SSH su HomeSOC (T1110.001)
        Trigger: ≥5 login SSH falliti in 60s dallo stesso IP
-       Asset: SOC-01 (R-10)
-       Prerequisito: Rule 5720 è la built-in Wazuh per SSH failures
+       Asset: SOC-01 (R-10), END-05 (MacBook)
+       Nota v1.4: su Debian 13 (Proxmox) sshd-session logga "Invalid user"
+       → rule 5710 (non 5720). Rule 100001 copre utenti inesistenti (5710),
+       rule 100002 copre password errate su utenti validi (5720).
        ============================================================ -->
 
-  <rule id="100001" level="10">
-    <if_matched_sid>5720</if_matched_sid>
+  <!-- Brute force con utenti inesistenti — es. scansioni automatiche -->
+  <rule id="100001" level="10" timeframe="60" frequency="5">
+    <if_matched_sid>5710</if_matched_sid>
     <same_source_ip />
-    <timeframe>60</timeframe>
-    <frequency>5</frequency>
-    <description>UC-01 HomeSOC: Brute force SSH rilevato da $(srcip) — attivare fail2ban</description>
+    <description>UC-01 HomeSOC: Brute force SSH — utente inesistente da $(srcip)</description>
     <mitre>
       <id>T1110.001</id>
     </mitre>
     <group>authentication_failures,brute_force,homesoc_uc01,</group>
   </rule>
 
-  <!-- Alert escalation: brute force persistente (≥15 tentativi in 120s) -->
-  <rule id="100002" level="14">
-    <if_matched_sid>100001</if_matched_sid>
+  <!-- Brute force con password errate su utente valido -->
+  <rule id="100002" level="10" timeframe="60" frequency="5">
+    <if_matched_sid>5720</if_matched_sid>
     <same_source_ip />
-    <timeframe>120</timeframe>
-    <frequency>3</frequency>
-    <description>UC-01 HomeSOC: Brute force SSH CRITICO da $(srcip) — ≥15 tentativi in 120s</description>
+    <description>UC-01 HomeSOC: Brute force SSH — password errata da $(srcip)</description>
     <mitre>
       <id>T1110.001</id>
     </mitre>
-    <group>authentication_failures,brute_force,homesoc_uc01,critical,</group>
+    <group>authentication_failures,brute_force,homesoc_uc01,</group>
   </rule>
 
 
@@ -1103,7 +1103,11 @@ echo "$RESPONSE" | jq -c '.data[]' 2>/dev/null | while read -r entry; do
   REASON=$(echo "$entry" | jq -r '.reasons[0].name // ""')
 
   # Formato syslog-like per decodifica Wazuh
-  echo "${TIMESTAMP} homesoc nextdns: domain=\"${DOMAIN}\" device=\"${DEVICE}\" blocked=\"${BLOCKED}\" reason=\"${REASON}\"" \
+  # ⚠️ Fix v1.4: timestamp in formato syslog (MMM DD HH:MM:SS) non ISO8601.
+  # Il pre-decoder Wazuh non riconosce ISO8601 e non estrae program_name,
+  # causando "No decoder matched". Con formato syslog il pre-decoder estrae
+  # correttamente hostname='homesoc' e program_name='nextdns'.
+  echo "$(date "+%b %e %H:%M:%S") homesoc nextdns: domain=\"${DOMAIN}\" device=\"${DEVICE}\" blocked=\"${BLOCKED}\" reason=\"${REASON}\"" \
     >> "$LOG_FILE"
 done
 
@@ -1131,6 +1135,8 @@ sudo crontab -e
 ### 10.4 Decoder Wazuh per NextDNS
 
 > ⚠️ **Fix v1.1 — Struttura parent/child obbligatoria:** il decoder con solo `<program_name>` + `<regex>` in un unico blocco non triggera correttamente in Wazuh 4.x quando la regex deve estrarre campi. La struttura corretta prevede un **parent decoder** (filtra per program_name) e un **child decoder** (estrae i campi con regex PCRE2). Il child usa `type="pcre2"` per garantire supporto a `\S` e lookahead che il motore OSSEC regex non supporta nativamente.
+
+> ⚠️ **Fix v1.4 — Formato timestamp syslog obbligatorio:** il pre-decoder Wazuh riconosce solo il formato syslog standard `MMM DD HH:MM:SS hostname program_name: message`. Il timestamp ISO8601 (es. `2026-04-23T17:42:47`) non viene parsato correttamente — il pre-decoder non estrae `program_name` e il decoder non matcha mai. Lo script `nextdns-fetch.sh` usa `date "+%b %e %H:%M:%S"` per garantire il formato corretto.
 
 ```bash
 # Su vm-103
@@ -1160,21 +1166,25 @@ DECODER_EOF
 **Verifica decoder con wazuh-logtest:**
 
 ```bash
-# Su vm-103 — test con una riga di log di esempio
-echo '2026-04-20T14:45:16.710Z homesoc nextdns: domain="www.baidu.com" device="151.48.208.59" blocked="ok" reason=""' | \
+# Su vm-103 — test con una riga di log di esempio in formato syslog
+# ⚠️ Fix v1.4: usare formato syslog (Apr 23 17:42:47), non ISO8601
+echo 'Apr 23 17:42:47 homesoc nextdns: domain="www.baidu.com" device="151.48.208.59" blocked="ok" reason=""' | \
   sudo /var/ossec/bin/wazuh-logtest
 
 # Output atteso:
 # **Phase 1: Completed pre-decoding.
 #   full event: ...
+#   timestamp: 'Apr 23 17:42:47'
 #   hostname: 'homesoc'
 #   program_name: 'nextdns'
 # **Phase 2: Completed decoding.
-#   decoder: 'nextdns-log-fields'
+#   name: 'nextdns-log'
 #   nextdns.domain: 'www.baidu.com'
 #   nextdns.device: '151.48.208.59'
 #   nextdns.blocked: 'ok'
-#   nextdns.reason: ''
+# **Phase 3: Completed filtering (rules).
+#   id: '100010'
+#   Rule 100010 matched
 ```
 
 > ℹ️ Se wazuh-logtest mostra ancora "No decoder matched" dopo questo fix: verificare che non ci siano errori XML nel file (`xmllint --noout /var/ossec/etc/decoders/nextdns-decoder.xml`) e che il manager sia stato ricaricato (`sudo systemctl reload wazuh-manager`).
@@ -1698,6 +1708,7 @@ Se vm-103 non è inclusa: **Web UI Proxmox** → `Datacenter` → `Backup` → j
 - [ ] Wazuh Agent installato su MacBook Pro M1 (ARM64)
 - [ ] Agent in stato `Active` in Dashboard → Agents
 - [ ] `agent_control -l` su vm-103 mostra `macbook-pro-m1-ale · Active`
+- [ ] `agent_control -l` su vm-103 mostra `soc-01 · Active` (ID 002)
 
 **FIM (UC-03):**
 - [ ] `ossec.conf` macOS contiene sezione `<syscheck>` con percorsi configurati
@@ -1718,7 +1729,7 @@ Se vm-103 non è inclusa: **Web UI Proxmox** → `Datacenter` → `Backup` → j
 - [ ] Test UC-06 (rogue device) → alert 100040 generato ✅
 
 **Ingestion esterna:**
-- [ ] Script `nextdns-fetch.sh` con cron ogni 5 min — `sudo crontab -l | grep nextdns`
+- [ ] Script `nextdns-fetch.sh` con cron ogni 15 min — `sudo crontab -l | grep nextdns`
 - [ ] Script `rogue-device-check.sh` con cron ogni 15 min
 - [ ] Script `nas-monitor.sh` con cron ogni 30 min
 - [ ] Script `fim-snapshot.sh` (MacBook) con cron ogni 5 min
@@ -1849,7 +1860,7 @@ grep -A5 "decoder name=" /var/ossec/etc/decoders/nextdns-decoder.xml
 
 # 3. Reload e retest
 sudo systemctl reload wazuh-manager
-echo "$(date -Iseconds) homesoc nextdns: domain=\"www.baidu.com\" device=\"151.48.208.59\" blocked=\"ok\" reason=\"\"" | \
+echo 'Apr 23 17:42:47 homesoc nextdns: domain="www.baidu.com" device="151.48.208.59" blocked="ok" reason=""' | \
   sudo /var/ossec/bin/wazuh-logtest
 
 # 4. Se ancora "No decoder matched": verifica che il pre-decoder estragga program_name
@@ -1926,5 +1937,5 @@ Dopo aver completato e verificato questa checklist:
    - Preparazione per future esposizioni internet
 ---
 
-*File: `runbooks/wazuh-deploy.md` · v1.2 · Aprile 2026*  
+*File: `runbooks/wazuh-deploy.md` · v1.4 · Aprile 2026*  
 *HomeSOC Project — Alessandro · LM Sicurezza Informatica · UniMI*

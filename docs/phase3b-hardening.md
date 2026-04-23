@@ -1,7 +1,7 @@
 # Fase 3b — Hardening & Integration
 **Progetto:** HomeSOC · Domestic Security Operations Centre  
 **File:** `docs/phase3b-hardening.md`  
-**Versione:** 1.0 — Aprile 2026  
+**Versione:** 1.1 — Aprile 2026  
 **Autore:** Alessandro · LM Sicurezza Informatica · UniMI  
 **Fase:** 3b — Consolidamento pre-Phase 4  
 **Prerequisiti:** `wazuh-deploy.md` v1.2 ✅ · `wazuh-slack.md` v1.0 ✅ · `crowdsec-deploy.md` v1.1 ✅
@@ -9,6 +9,7 @@
 > **Scopo:** Prima di procedere con la Fase 4 (TheHive, Cortex, OpenCTI), questa fase intermedia porta l'infrastruttura esistente dalla condizione *"deployata e funzionante"* alla condizione *"operativa e difensivamente efficace"*. Ogni tool già installato viene integrato, chiusi i gap di visibilità identificati post-deploy, e aggiunta la capacità di risposta attiva. Al termine di questa fase il HomeSOC produce **protezione reale e misurabile**, non solo alert.
 
 **Changelog:**
+- v1.1 — Aprile 2026 — T-01/T-02/T-03/T-04 completati e verificati. Fix path health check (tutti i log in `/var/log/homesoc/`, rim. fim-macos non monitorabile da vm-103). T-02: decisione documentata — 100010 commentato in ossec.conf, solo 100011 (>20 query/min) notifica Slack. T-03: Uptime Kuma → Slack operativo. T-04: Active Response deployato su SOC-01 (agent ID 002, porta SSH 2222); nota limitazione macOS SSH (sshd-session non logga auth failures standard); rule 100001 riconosce sia 5710 (utente inesistente) sia 5720 (password errata); whitelist IP interni configurata; blocco firewall-drop verificato con test live.
 - v1.0 — Aprile 2026 — Prima stesura post gap-analysis Fase 3
 
 ---
@@ -89,37 +90,40 @@
 ### 3.1 Verifica cron NextDNS (UC-02)
 
 ```bash
-# Su MacBook (END-05)
-# Verifica crontab attivo
-crontab -l | grep nextdns
-# Output atteso: riga con il path dello script e frequenza
+# Su vm-103
+# Verifica crontab attivo (gira come root)
+sudo crontab -l | grep nextdns
+# Output atteso: */15 * * * * /opt/homesoc/scripts/nextdns-fetch.sh ...
 
-# Verifica log recente (deve avere eventi nell'ultima ora)
-ls -lh /var/log/nextdns-queries.log
-stat /var/log/nextdns-queries.log | grep Modify
-# La data di modifica deve essere recente
+# Verifica log recente — path reale in /var/log/homesoc/
+sudo ls -lh /var/log/homesoc/nextdns.log
+sudo stat /var/log/homesoc/nextdns.log | grep Modify
+# La data di modifica deve essere recente (entro 15 minuti)
 
-# Verifica contenuto ultimo evento
-tail -5 /var/log/nextdns-queries.log
+# Verifica contenuto ultimo evento — formato syslog
+sudo tail -3 /var/log/homesoc/nextdns.log
+# Formato atteso: Apr 23 17:48:40 homesoc nextdns: domain="..." device="..." blocked="..." reason="..."
 ```
 
 ### 3.2 Verifica cron nmap rogue device (UC-06)
 
 ```bash
-# Su vm-103 (o MacBook se lo script gira lì — vedi wazuh-deploy.md sez. 11)
-crontab -l | grep nmap
-ls -lh /var/log/rogue-device.log
-tail -5 /var/log/rogue-device.log
-# L'ultimo scan deve essere entro l'intervallo configurato (es. ogni 15 min)
+# Su vm-103
+sudo crontab -l | grep rogue
+# Output atteso: 0 8-23 * * * /opt/homesoc/scripts/rogue-device-check.sh ...
+
+# Verifica log recente — path reale in /var/log/homesoc/
+sudo ls -lh /var/log/homesoc/rogue-device.log
+sudo tail -3 /var/log/homesoc/rogue-device.log
 ```
 
 ### 3.3 Verifica NAS port monitor (UC-04)
 
 ```bash
-# Su vm-103
-sudo ls -lh /var/log/nas-monitor.log
-sudo tail -5 /var/log/nas-monitor.log
-# L'ultimo check deve essere recente (script gira ogni 5 min da cron)
+# Su vm-103 — path reale in /var/log/homesoc/
+sudo ls -lh /var/log/homesoc/nas-monitor.log
+sudo tail -3 /var/log/homesoc/nas-monitor.log
+# L'ultimo check deve essere recente (script gira ogni 30 min da cron)
 ```
 
 ### 3.4 Verifica FIM workaround macOS (UC-03)
@@ -173,11 +177,12 @@ check_log_freshness() {
   fi
 }
 
-# Nota: i path vanno aggiornati se diversi da quelli in wazuh-deploy.md
-check_log_freshness "nextdns"     "/var/log/nextdns-queries.log"
-check_log_freshness "rogue-device" "/var/log/rogue-device.log"
-check_log_freshness "nas-monitor" "/var/log/nas-monitor.log"
-check_log_freshness "fim-macos"   "/var/log/fim-macos.log"
+# Path verificati in produzione (Aprile 2026) — tutti i log in /var/log/homesoc/
+check_log_freshness "nextdns"      "/var/log/homesoc/nextdns.log"
+check_log_freshness "rogue-device" "/var/log/homesoc/rogue-device.log"
+check_log_freshness "nas-monitor"  "/var/log/homesoc/nas-monitor.log"
+# Nota: fim-macos NON monitorato qui — il log vive su END-05 (MacBook), non su vm-103.
+# La freschezza del FIM macOS è verificata indirettamente dall'agent Wazuh (END-05 active).
 EOF
 
 sudo chmod +x /usr/local/bin/homesoc-healthcheck.sh
@@ -210,26 +215,39 @@ Aggiungere la rule in `/var/ossec/etc/rules/local_rules.xml`:
 </rule>
 ```
 
-> ✅ **Checkpoint T-01:** Tutti e 4 i log source mostrano `status=OK`. Lo script di health check gira via cron. La rule 100060 esiste in `local_rules.xml`.
+> ✅ **Checkpoint T-01:** Script `/usr/local/bin/homesoc-healthcheck.sh` gira via cron ogni 30 minuti. Eseguire manualmente `sudo /usr/local/bin/homesoc-healthcheck.sh` e verificare che `/var/log/homesoc-healthcheck.log` mostri `status=OK` per nextdns, rogue-device e nas-monitor. `fim-macos` non è monitorato da questo script (log remoto su END-05).
 
 ---
 
 ## 4. T-02 — Fix threshold UC-02 per Slack
 
-**Obiettivo:** La rule UC-02 (100010, beaconing IoT) è level 8. La `<integration>` Wazuh → Slack usa `<level>10</level>` come threshold. Aggiungere il rule ID specifico al blocco di integrazione per bypassare il filtro di level mantenendo la semantica corretta del level 8.
+**Obiettivo:** La rule UC-02 (100010, beaconing IoT) è level 8. La `<integration>` Wazuh → Slack usa `<level>10</level>` come threshold. Garantire che il beaconing IoT ad alta frequenza (rule 100011, level 10) generi notifica Slack senza spam per query singole e isolate.
 
-**Dove:** vm-103
+**Decisione di design (Aprile 2026):** la rule 100010 (singola query verso dominio cinese, level 8) **non** viene aggiunta alla `<integration>` Slack. Motivo: i robot IoT (Dreame/Narwal) fanno query periodiche verso CDN Alibaba/Baidu che sono normali per il firmware — aggiungerle a Slack genera spam. La notifica aggregata 100011 (>20 query/min dallo stesso device, level 10) è il segnale realmente significativo di beaconing attivo.
 
-### 4.1 Modifica ossec.conf
+**Configurazione ossec.conf (già applicata):**
 
-```bash
-# Su vm-103
-sudo cp /var/ossec/etc/ossec.conf /var/ossec/etc/ossec.conf.bak-$(date +%Y%m%d)-t02
+```xml
+<!-- Integrazione Slack principale — threshold level 10 copre 100011 e tutti gli altri UC -->
+<integration>
+  <name>slack</name>
+  <hook_url>https://hooks.slack.com/services/...</hook_url>
+  <level>10</level>
+  <alert_format>json</alert_format>
+</integration>
 
-sudo nano /var/ossec/etc/ossec.conf
+<!--
+  UC-02 — Notifica Slack per singola query IoT verso dominio cinese (rule 100010, level 8).
+  DISABILITATO: genera spam per query isolate e innocue (es. CDN Alibaba da firmware Dreame/Narwal).
+  La notifica aggregata è gestita dalla rule 100011 (>20 query/min, level 10) coperta dal
+  blocco <integration> con <level>10</level> sopra. La 100010 resta visibile in Dashboard.
+  Riabilitare solo se si vuole visibilità immediata su ogni singola query sospetta.
+-->
 ```
 
-Trovare il blocco `<integration>` esistente per Slack. Aggiungere un secondo blocco dedicato a UC-02:
+**Dove:** vm-103 (`/var/ossec/etc/ossec.conf`)
+
+> ✅ **Checkpoint T-02:** Iniettare una riga di test in `/var/log/homesoc/nextdns.log` con `blocked="ok"` e dominio cinese. Verificare che rule 100010 scatti in `alerts.log`. Verificare che **non** arrivi notifica Slack (la 100010 è level 8, sotto threshold). Per testare la 100011 iniettare >20 righe identiche in 60 secondi dallo stesso device. Aggiungere un secondo blocco dedicato a UC-02:
 
 ```xml
 <!-- Integrazione Slack — rule_id specifici sotto threshold level -->
@@ -311,20 +329,48 @@ Monitor prioritari da aggiornare:
 
 ## 6. T-04 — Wazuh Active Response (UC-01)
 
-**Obiettivo:** Configurare Wazuh Active Response per bloccare automaticamente gli IP che scatenano la rule 100001 (SSH brute force, UC-01). Trasforma UC-01 da "detection + alert" a "detection + response + alert". L'IP bloccante viene aggiunto a iptables sull'agent (END-05) e notificato via Slack.
+**Obiettivo:** Configurare Wazuh Active Response per bloccare automaticamente gli IP che scatenano la rule 100001/100002 (SSH brute force, UC-01). Trasforma UC-01 da "detection + alert" a "detection + response + alert". L'IP viene bloccato via `firewall-drop` sull'agent target e notificato via Slack.
 
-**Dove:** vm-103 (ossec.conf manager) + END-05 (verifica agent capabilities)
+**Dove:** vm-103 (ossec.conf manager) + SOC-01 (agent ID 002, target principale)
 
-> ⚠️ **Attenzione:** Prima di abilitare Active Response, verificare che gli IP di SOC-01 e del MacBook stesso non siano mai sorgente di brute force (es. test con ssh-keyscan o scansioni di sicurezza dall'interno). Configurare sempre la whitelist.
+> ⚠️ **Attenzione:** Prima di abilitare Active Response, configurare sempre la whitelist degli IP interni. Un falso positivo potrebbe bloccare SOC-01 o il proprio MacBook.
 
-### 6.1 Verifica script firewall-drop disponibile sull'agent macOS
+### 6.1 Prerequisiti — Wazuh Agent su SOC-01
+
+L'Active Response richiede un Wazuh Agent sull'host target. Il MacBook (END-05) ha limitazioni SSH (sshd-session su macOS non logga auth failures in modo compatibile con le rule built-in Wazuh). SOC-01 è il target primario per il test e la produzione.
 
 ```bash
-# Su MacBook (END-05)
-ls /Library/Ossec/active-response/bin/firewall-drop
-# Se esiste: ✅
-# Se non esiste: verificare la versione dell'agent — disponibile da Wazuh 4.x macOS
+# Su SOC-01 — installazione agent Wazuh v4.14.4
+curl -s https://packages.wazuh.com/key/GPG-KEY-WAZUH | gpg --no-default-keyring \
+  --keyring gnupg-ring:/usr/share/keyrings/wazuh.gpg --import && \
+  chmod 644 /usr/share/keyrings/wazuh.gpg
+
+echo "deb [signed-by=/usr/share/keyrings/wazuh.gpg] https://packages.wazuh.com/4.x/apt/ stable main" \
+  | tee /etc/apt/sources.list.d/wazuh.list
+
+apt-get update && apt-get install -y wazuh-agent=4.14.4-1
+
+# Enrollment
+WAZUH_MANAGER="192.168.68.204" WAZUH_AGENT_NAME="SOC-01" \
+  /var/ossec/bin/agent-auth -m 192.168.68.204
+
+# Fix: sostituire il placeholder MANAGER_IP nel config
+sed -i 's/MANAGER_IP/192.168.68.204/' /var/ossec/etc/ossec.conf
+
+# Aggiungere /var/log/auth.log al logcollector (non presente nel template default)
+sed -i 's|</ossec_config>|  <localfile>\n    <log_format>syslog</log_format>\n    <location>/var/log/auth.log</location>\n  </localfile>\n\n</ossec_config>|' /var/ossec/etc/ossec.conf
+
+# Abilitare PasswordAuthentication per test brute force (rimuovere dopo il test)
+echo "PasswordAuthentication yes" >> /etc/ssh/sshd_config
+systemctl restart ssh
+
+systemctl enable wazuh-agent && systemctl start wazuh-agent
+systemctl is-active wazuh-agent  # deve essere: active
 ```
+
+> ℹ️ SSH su SOC-01 è in ascolto sulla **porta 2222** (non 22 standard). Verificare con `ss -tlnp | grep :22`.
+
+> ⚠️ **Nota macOS (END-05):** `firewall-drop` esiste su macOS (`/Library/Ossec/active-response/bin/firewall-drop`) ma SSH su macOS con sshd-session non genera log di autenticazione fallita compatibili con le rule Wazuh built-in (5710/5720). Il blocco su END-05 è configurato ma non testabile con il metodo standard. SOC-01 è il target verificato in produzione.
 
 ### 6.2 Configurazione ossec.conf — Manager
 
@@ -334,29 +380,27 @@ sudo cp /var/ossec/etc/ossec.conf /var/ossec/etc/ossec.conf.bak-$(date +%Y%m%d)-
 sudo nano /var/ossec/etc/ossec.conf
 ```
 
-Aggiungere prima della chiusura `</ossec_config>`:
+Aggiungere le whitelist nel blocco `<global>` esistente (cercare `<white_list>127.0.0.1</white_list>`):
+
+```xml
+<white_list>192.168.68.200</white_list>  <!-- SOC-01 -->
+<white_list>192.168.68.108</white_list>  <!-- MacBook END-05 -->
+<white_list>192.168.68.1</white_list>    <!-- Gateway Deco -->
+```
+
+Sostituire il blocco `<active-response>` placeholder con:
 
 ```xml
 <!-- T-04: Active Response — SSH brute force UC-01 -->
 <active-response>
   <command>firewall-drop</command>
   <location>local</location>
-  <rules_id>100001</rules_id>
+  <rules_id>100001,100002</rules_id>
   <timeout>3600</timeout>
 </active-response>
-
-<!-- Whitelist IP interni — mai bloccare SOC-01 o MacBook -->
-<global>
-  <white_list>192.168.68.200</white_list>  <!-- SOC-01 -->
-  <white_list>192.168.68.108</white_list>  <!-- MacBook END-05 -->
-  <white_list>192.168.68.1</white_list>    <!-- Gateway Deco -->
-  <white_list>127.0.0.1</white_list>
-</global>
 ```
 
-> ℹ️ `<location>local</location>` esegue il blocco sull'agent che ha generato l'evento (END-05). Se in futuro si aggiungono altri agent (es. NAS, POS), si può usare `<location>all</location>` per propagare il blocco.
-
-> ℹ️ `<timeout>3600</timeout>` blocca l'IP per 1 ora. Dopo il timeout `firewall-drop` rimuove automaticamente la regola iptables. Valore consigliato per un homelab: 3600 (1h) o 86400 (24h) per IP che scatenano soglie alte.
+> ℹ️ `<location>local</location>` esegue il blocco sull'agent che ha generato l'evento. `<timeout>3600</timeout>` blocca per 1 ora, poi `firewall-drop` rimuove automaticamente la regola iptables.
 
 ### 6.3 Riavvio e verifica
 
@@ -366,44 +410,54 @@ sudo systemctl restart wazuh-manager
 sleep 15
 sudo systemctl is-active wazuh-manager  # Deve essere: active
 
-# Verifica che il comando firewall-drop sia registrato
-sudo grep -A5 "firewall-drop" /var/ossec/etc/shared/default/ar.conf
+# Verifica agent SOC-01 visibile
+sudo /var/ossec/bin/agent_control -l
+# Output atteso: ID 002, soc-01, Active
 ```
 
 ### 6.4 Test Active Response
 
-> ⚠️ Eseguire da una macchina **diversa** da MacBook e SOC-01 (es. uno smartphone via SSH app, o una VM Proxmox temporanea). Non usare mai gli IP in whitelist per il test.
+Il test viene eseguito da vm-103 (IP 192.168.68.204, **non in whitelist**) verso SOC-01 (porta 2222):
 
 ```bash
-# Da un host NON in whitelist — es. VM temporanea Proxmox
-# Generare 6+ tentativi SSH falliti verso END-05
+# Su vm-103 — prerequisito
+sudo apt-get install -y sshpass
+
+# Generare 8+ tentativi SSH falliti verso SOC-01
 for i in {1..8}; do
-  ssh -o ConnectTimeout=3 utente-inesistente@192.168.68.108 2>/dev/null
+  sshpass -p "passwordsbagliata" ssh -o ConnectTimeout=3 \
+    -o StrictHostKeyChecking=no \
+    -p 2222 \
+    invaliduser99@192.168.68.200 2>/dev/null
   sleep 1
 done
+
+sleep 10
+
+# Verifica alert UC-01
+sudo grep "100001\|100002" /var/ossec/logs/alerts/alerts.log | tail -5
 ```
 
-Su vm-103, verificare:
+Su SOC-01, verificare il blocco:
 
 ```bash
-# Verifica alert UC-01 generato
-sudo grep "100001" /var/ossec/logs/alerts/alerts.log | tail -5
+# Su SOC-01
+iptables -L INPUT -n | grep 192.168.68.204
+# Output atteso: DROP all -- 192.168.68.204 0.0.0.0/0
 
-# Verifica active response eseguito
-sudo grep "active-response" /var/ossec/logs/ossec.log | tail -5
-sudo grep "firewall-drop" /var/ossec/logs/active-responses.log | tail -5
+# Sblocco manuale dopo il test (opzionale — scade automaticamente dopo 1h)
+iptables -D INPUT -s 192.168.68.204 -j DROP
 ```
 
-Su END-05, verificare:
+> ⚠️ **Cleanup post-test:** rimuovere `PasswordAuthentication yes` da `/etc/ssh/sshd_config` su SOC-01 dopo il test e riavviare SSH.
 
 ```bash
-# Verifica regola iptables aggiunta
-sudo iptables -L INPUT -n | grep <IP_TEST>
-# oppure su macOS
-sudo pfctl -t ossec_fwdrop -T show
+# Su SOC-01 — cleanup
+sed -i '/^PasswordAuthentication yes/d' /etc/ssh/sshd_config
+systemctl restart ssh
 ```
 
-> ✅ **Checkpoint T-04:** L'IP del tester è bloccato. Un alert rule 100001 è visibile in Wazuh Dashboard. Una notifica Slack è arrivata nel canale `#homesoc-alerts` con il messaggio di brute force.
+> ✅ **Checkpoint T-04:** Rule 100001 scatta in `alerts.log`. Iptables su SOC-01 mostra `DROP` per l'IP attaccante. Notifica Slack arriva nel canale `#homesoc-alerts`.
 
 ### 6.5 Slack notification per Active Response
 
@@ -858,12 +912,13 @@ Completare questa checklist prima di procedere con il deployment di TheHive, Cor
 
 ### Componenti infrastrutturali
 
-- [ ] T-01: Health check eseguito — tutti i log source `status=OK`
-- [ ] T-01: Script `homesoc-healthcheck.sh` attivo via cron su vm-103
-- [ ] T-02: Rule 100010 genera notifica Slack (test iniettato con successo)
-- [ ] T-03: Uptime Kuma invia notifica Slack per down/up servizi (test eseguito)
-- [ ] T-04: Wazuh Active Response blocca IP brute force su END-05 (test eseguito)
-- [ ] T-04: Rule 100061 genera notifica Slack per ogni blocco attivo
+- [x] T-01: Health check eseguito — nextdns, rogue-device, nas-monitor `status=OK`
+- [x] T-01: Script `homesoc-healthcheck.sh` attivo via cron su vm-103 (ogni 30 min)
+- [x] T-02: UC-02 Slack configurato — 100011 (>20 query/min) notifica Slack; 100010 commentato (decisione documentata)
+- [x] T-03: Uptime Kuma invia notifica Slack per down/up servizi — testato
+- [x] T-04: Wazuh Agent installato su SOC-01 (ID 002, Active)
+- [x] T-04: Wazuh Active Response blocca IP brute force su SOC-01 — `iptables DROP` verificato
+- [x] T-04: Rule 100061 aggiunta in `local_rules.xml`
 - [ ] T-05: Vulnerability Detector attivo — primo report disponibile in Dashboard
 - [ ] T-05: Rule 100062 genera alert per CVE High/Critical
 - [ ] T-06: Wazuh Agent installato su ct-102 e visibile in Dashboard
@@ -875,13 +930,13 @@ Completare questa checklist prima di procedere con il deployment di TheHive, Cor
 
 | Use Case | Detection | Notification | Active Response |
 |---|---|---|---|
-| UC-01 SSH brute force | ✅ | ✅ Slack | ✅ firewall-drop (T-04) |
-| UC-02 IoT beaconing | ✅ | ✅ Slack (T-02) | ❌ (non applicabile) |
+| UC-01 SSH brute force | ✅ | ✅ Slack | ✅ firewall-drop su SOC-01 (T-04) |
+| UC-02 IoT beaconing | ✅ | ✅ Slack — 100011 >20q/min (T-02) | ❌ (non applicabile) |
 | UC-03 FIM macOS | ✅ | ✅ Slack | ❌ (non applicabile) |
 | UC-04 NAS port monitor | ✅ | ✅ Slack | ❌ futuro |
 | UC-06 Rogue device | ✅ | ✅ Slack | ❌ futuro |
-| Greenbone findings | ✅ (T-06) | ✅ Slack (T-06) | ❌ (manuale) |
-| Vuln. Detector CVE | ✅ (T-05) | ✅ Slack (T-05) | ❌ (manuale) |
+| Greenbone findings | ⏳ (T-06) | ⏳ Slack (T-06) | ❌ (manuale) |
+| Vuln. Detector CVE | ⏳ (T-05) | ⏳ Slack (T-05) | ❌ (manuale) |
 | Log source stale | ✅ (T-01) | ✅ Slack (T-01) | ❌ (non applicabile) |
 
 ### Protezione attiva post-Fase 3b
@@ -920,5 +975,5 @@ git tag -a phase3b-plan -m "HomeSOC Phase 3b — Hardening Plan — Aprile 2026"
 
 ---
 
-*File: `docs/phase3b-hardening.md` · v1.0 · Aprile 2026*  
+*File: `docs/phase3b-hardening.md` · v1.1 · Aprile 2026*  
 *HomeSOC Project — Alessandro · LM Sicurezza Informatica · UniMI*
