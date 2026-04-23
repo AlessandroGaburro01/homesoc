@@ -13,6 +13,7 @@
 **Changelog:**
 - v1.0 — Aprile 2026 — Prima stesura
 - v1.1 — Aprile 2026 — Fix post-deploy reale: percorso log CrowdSec, formato syslog RFC3164, decoder OS_Regex, regole Wazuh; aggiunte note Debian 13 e sezione troubleshooting estesa
+- v1.2 — Aprile 2026 — Fix Debian 12 / OpenSSH moderno: rsyslog ISO 8601 → RFC 3164 (riga 60 rsyslog.conf), acquis.yaml multi-documento → acquis.d/ migration, parser sshd-session per OpenSSH ≥ 9.x (00-sshd-session-fix.yaml, onsuccess: continue); test end-to-end verificato con alert Slack rule 100051 level 10
 
 ---
 
@@ -254,47 +255,120 @@ cscli scenarios list
 # Atteso: crowdsecurity/ssh-bf, crowdsecurity/ssh-slow-bf, etc.
 ```
 
-### 4.3 Configurazione acquisitions per Proxmox Web UI
+### 4.3 Configurazione acquisitions — acquis.d/ (Debian 12)
 
-Il log di Proxmox Web UI (pveproxy) non viene rilevato automaticamente. Aggiungi manualmente la sorgente con la sintassi corretta:
+> ⚠️ **Tre problemi verificati in produzione su Debian 12 + CrowdSec v1.4.6:**
+> 1. **Campo `tags:` non supportato:** causa errore fatale `field tags not found in type fileacquisition.FileConfiguration` → rimuovere da acquis.yaml
+> 2. **Separatore `---` in acquis.yaml:** può causare comportamento non deterministico su alcune versioni → usare `acquis.d/` con file separati
+> 3. **Formato timestamp ISO 8601 in auth.log:** rsyslog su Debian 12 scrive il timestamp come `2026-04-23T10:21:59.123+02:00` invece del formato RFC 3164 classico `Apr 23 10:21:59`. Il parser `crowdsecurity/syslog-logs` non riconosce il formato ISO 8601 → tutte le righe risultano unparsed. Fix: forzare il template tradizionale in `rsyslog.conf`
 
-> ⚠️ **Nota Debian 13 + CrowdSec v1.6+:** Il campo `tags:` nella configurazione `acquis.yaml` non è supportato nelle versioni recenti di CrowdSec e causa un errore fatale all'avvio (`field tags not found in type fileacquisition.FileConfiguration`). Usa esclusivamente i campi `filenames` e `labels`. Per SSH su Debian 13, usa `source: journalctl` invece di puntare a `/var/log/auth.log` che non esiste.
+**Step 1 — Fix rsyslog: forza formato RFC 3164 per auth.log**
 
 ```bash
 # Su SOC-01
 
-# Prima verifica la configurazione attuale
-cat /etc/crowdsec/acquis.yaml
+# Trova il numero di riga della regola auth.log
+grep -n "auth.log" /etc/rsyslog.conf
+# Tipicamente: 60:auth,authpriv.* /var/log/auth.log
 
-# Sostituisci completamente acquis.yaml con la configurazione corretta
-cat > /etc/crowdsec/acquis.yaml << 'EOF'
-# SSH — lettura da journald (Debian 13: auth.log non esiste)
-source: journalctl
-journalctl_filter:
-  - "_SYSTEMD_UNIT=ssh.service"
+# Aggiungi il template tradizionale sulla riga (sostituire XX con il numero reale)
+sed -i 'XXs|/var/log/auth.log$|/var/log/auth.log;RSYSLOG_TraditionalFileFormat|' /etc/rsyslog.conf
+
+# Verifica
+grep "auth.log" /etc/rsyslog.conf
+# Atteso: auth,authpriv.* /var/log/auth.log;RSYSLOG_TraditionalFileFormat
+
+# Test sintassi e riavvio
+rsyslogd -N1 && systemctl restart rsyslog
+
+# Verifica formato nuova riga — genera attività auth
+logger -p auth.info "test-format-check"
+tail -3 /var/log/auth.log
+# Atteso: Apr 23 10:xx:xx soc-01 root: test-format-check (NON ISO 8601)
+```
+
+**Step 2 — Migra da acquis.yaml a acquis.d/**
+
+```bash
+# Su SOC-01
+
+# Crea directory acquis.d/ se non esiste
+mkdir -p /etc/crowdsec/acquis.d
+
+# File 1: SSH — auth.log (formato RFC 3164 dopo il fix rsyslog)
+tee /etc/crowdsec/acquis.d/auth-log.yaml << 'EOF'
+filenames:
+  - /var/log/auth.log
 labels:
   type: syslog
----
-# Proxmox Web UI — log HTTP in formato nginx-compatibile
+EOF
+
+# File 2: Proxmox Web UI — HTTP access log
+tee /etc/crowdsec/acquis.d/pveproxy.yaml << 'EOF'
 filenames:
   - /var/log/pveproxy/access.log
 labels:
   type: nginx
 EOF
 
-# Riavvia CrowdSec per applicare
+# Svuota acquis.yaml principale (lasciarlo vuoto evita conflitti)
+truncate -s 0 /etc/crowdsec/acquis.yaml
+
+# Riavvia CrowdSec
 systemctl restart crowdsec
 
-# Verifica che CrowdSec sia partito senza errori
-systemctl is-active crowdsec
-journalctl -u crowdsec -n 10 --no-pager | grep -E "level=fatal|level=error|Started"
-# Atteso: "Started crowdsec.service" senza fatal
+# Verifica che i file siano aperti dal processo
+ls -la /proc/$(systemctl show crowdsec --property=MainPID --value)/fd | grep -E "auth|pve"
+# Atteso: due symlink a /var/log/auth.log e /var/log/pveproxy/access.log
 
-# Verifica metriche — deve mostrare acquisitions attive
-cscli metrics | grep -A5 "Acquisition"
+# Genera attività e verifica parsing (attendi connessioni SSH reali)
+sleep 30 && cscli metrics 2>&1 | grep -A 8 "Acquisition"
+# Atteso: file:/var/log/auth.log con Lines parsed > 0
 ```
 
 > ℹ️ **Nota:** I log di pveproxy hanno formato HTTP access log compatibile con il parser nginx. Questo permette a CrowdSec di rilevare scan/brute force sulla Web UI Proxmox (porta 8006) senza parser dedicato.
+
+### 4.4 Fix parser sshd-session (OpenSSH ≥ 9.x su Debian 12)
+
+OpenSSH nelle versioni recenti (Proxmox 8.x / Debian 12) ha introdotto il processo separato `sshd-session` per gestire le sessioni autenticate. I log SSH vengono scritti con `program_name = sshd-session` invece del classico `sshd`. Il parser `crowdsecurity/sshd-logs` filtra esclusivamente su `evt.Parsed.program == 'sshd'` — tutti gli eventi risultano unparsed e non raggiungono mai lo scenario `ssh-bf`.
+
+> ℹ️ **Come verificare il problema:** Se `cscli metrics` mostra `Lines parsed > 0` nella tabella Acquisition ma `crowdsecurity/sshd-logs` **non appare** nella tabella Parser Metrics, il rename non avviene prima che sshd-logs valuti l'evento.
+
+**Fix: parser custom con prefisso 00- per garantire l'ordine di caricamento**
+
+```bash
+# Su SOC-01
+
+# Verifica il nome del programma nei log SSH
+tail -5 /var/log/auth.log | grep sshd
+# Se mostra "sshd-session[...]" invece di "sshd[...]" → fix necessario
+
+# Crea il parser custom — prefisso 00- garantisce il caricamento PRIMA di sshd-logs.yaml
+# onsuccess: continue → rimane nello stage s01-parse, permette a sshd-logs di processare l'evento
+cat > /etc/crowdsec/parsers/s01-parse/00-sshd-session-fix.yaml << 'EOF'
+# Fix per OpenSSH moderno (Debian 12 / Proxmox 8.x) — rinomina sshd-session → sshd
+# Necessario perché crowdsecurity/sshd-logs filtra solo su program == 'sshd'
+# onsuccess: continue mantiene l'evento nello stage corrente per il parser successivo
+name: custom/sshd-session-fix
+filter: "evt.Parsed.program == 'sshd-session'"
+onsuccess: continue
+nodes:
+  - filter: "true"
+    statics:
+      - parsed: program
+        value: "sshd"
+EOF
+
+# Riavvia
+systemctl restart crowdsec && echo "OK"
+
+# Verifica che crowdsecurity/sshd-logs appaia nei Parser Metrics
+# (genera prima qualche connessione SSH, poi:)
+cscli metrics 2>&1 | grep -A 15 "Parser Metrics"
+# Atteso: "crowdsecurity/sshd-logs" presente con Parsed > 0
+```
+
+> ⚠️ **Whitelist LAN:** La whitelist built-in di CrowdSec esclude `192.168.0.0/16` dalla detection. In un ambiente domestico questo significa che i test brute force da LAN non genereranno mai ban. La whitelist è corretta per la produzione — per i test commentare temporaneamente il CIDR in `/etc/crowdsec/parsers/s02-enrich/whitelists.yaml` e ripristinare dopo. Non rimuovere la whitelist in produzione.
 
 ---
 
@@ -753,8 +827,8 @@ Quando si espone un nuovo servizio, il pattern da seguire è:
 # 1. Installa la collection per il servizio
 cscli collections install crowdsecurity/<SERVIZIO>
 
-# 2. Aggiungi il log del servizio in acquis.yaml
-# /etc/crowdsec/acquis.yaml:
+# 2. Aggiungi il log del servizio in acquis.d/ (un file per servizio)
+# /etc/crowdsec/acquis.d/<servizio>.yaml:
 # filenames:
 #   - /var/log/<servizio>/access.log
 # labels:
@@ -823,8 +897,10 @@ mkdir -p /root/homesoc-config-backup/crowdsec
 
 # Copia file di configurazione (senza secrets)
 cp /etc/crowdsec/crowdsec.yaml /root/homesoc-config-backup/crowdsec/
-cp /etc/crowdsec/acquis.yaml /root/homesoc-config-backup/crowdsec/
+cp -r /etc/crowdsec/acquis.d/ /root/homesoc-config-backup/crowdsec/
 cp /etc/crowdsec/profiles.yaml /root/homesoc-config-backup/crowdsec/
+cp /etc/crowdsec/parsers/s01-parse/00-sshd-session-fix.yaml \
+   /root/homesoc-config-backup/crowdsec/
 
 # Esporta lista collections/scenari installati
 cscli collections list -o json > /root/homesoc-config-backup/crowdsec/collections-installed.json
@@ -866,11 +942,13 @@ Aggiungi la riga:
 - [ ] `cscli collections list | grep crowdsecurity/syslog` → `enabled`
 - [ ] `cscli scenarios list` → ssh-bf, ssh-slow-bf presenti
 
-**Acquisitions:**
-- [ ] `/etc/crowdsec/acquis.yaml` non contiene il campo `tags:` (causa errore fatale in CrowdSec v1.6+)
-- [ ] `/etc/crowdsec/acquis.yaml` contiene `source: journalctl` con filter `_SYSTEMD_UNIT=ssh.service` (Debian 13)
-- [ ] `/etc/crowdsec/acquis.yaml` contiene `/var/log/pveproxy/access.log`
-- [ ] `cscli metrics` mostra parser hits > 0
+**Acquisitions (Debian 12):**
+- [ ] `rsyslog.conf` riga auth.log ha template `RSYSLOG_TraditionalFileFormat` → `tail /var/log/auth.log` mostra formato `Apr 23 HH:MM:SS` (non ISO 8601)
+- [ ] `/etc/crowdsec/acquis.d/auth-log.yaml` presente con `filenames: [/var/log/auth.log]` e `type: syslog`
+- [ ] `/etc/crowdsec/acquis.d/pveproxy.yaml` presente con `type: nginx`
+- [ ] `/etc/crowdsec/acquis.yaml` vuoto (nessun conflitto con acquis.d/)
+- [ ] Parser fix OpenSSH: `/etc/crowdsec/parsers/s01-parse/00-sshd-session-fix.yaml` presente con `onsuccess: continue`
+- [ ] `cscli metrics` → Parser Metrics mostra `crowdsecurity/sshd-logs` con Parsed > 0
 
 **Firewall Bouncer:**
 - [ ] `systemctl is-active crowdsec-firewall-bouncer` → `active`
@@ -972,23 +1050,61 @@ cscli bouncers add cs-firewall-bouncer
 systemctl restart crowdsec-firewall-bouncer
 ```
 
-### Log SSH non vengono parsati — 0 hits nel parser
+### Log SSH non vengono parsati — 0 hits nel parser / crowdsecurity/sshd-logs assente
 
-Su Debian 13, `/var/log/auth.log` non esiste. I log SSH sono esclusivamente nel journal.
+**Causa A — Formato timestamp ISO 8601 (Debian 12):**
+
+rsyslog su Debian 12 scrive auth.log con timestamp ISO 8601 (`2026-04-23T10:21:59+02:00`) invece di RFC 3164 (`Apr 23 10:21:59`). Il parser `crowdsecurity/syslog-logs` non riconosce il formato ISO e scarta tutte le righe.
 
 ```bash
 # Su SOC-01
-# Verifica che acquis.yaml usi journalctl (non file) per SSH
-grep -A5 "journalctl" /etc/crowdsec/acquis.yaml
-# Deve mostrare: _SYSTEMD_UNIT=ssh.service
+# Verifica il formato timestamp
+tail -3 /var/log/auth.log
+# Se mostra "2026-04-23T..." → fix necessario
 
-# Verifica che CrowdSec legga dal journal in tempo reale
-journalctl -u crowdsec --no-pager | grep "journalctl"
-# Atteso: "Running journalctl command: ... _SYSTEMD_UNIT=ssh.service"
+# Trova e correggi la riga auth.log in rsyslog.conf
+grep -n "auth.log" /etc/rsyslog.conf
+# Aggiungi template: sed -i 'XXs|/var/log/auth.log$|/var/log/auth.log;RSYSLOG_TraditionalFileFormat|' /etc/rsyslog.conf
+rsyslogd -N1 && systemctl restart rsyslog
+```
 
-# Test manuale del parser su una riga di log reale da journal
-journalctl _SYSTEMD_UNIT=ssh.service --no-pager -n 1 | \
-  cscli explain --type syslog -f -
+**Causa B — OpenSSH moderno usa sshd-session (Debian 12 / Proxmox 8.x):**
+
+OpenSSH ≥ 9.x separa il processo di sessione in `sshd-session`. Il parser `crowdsecurity/sshd-logs` filtra `program == 'sshd'` — gli eventi `sshd-session` vengono parsati dal syslog-logs ma non raggiungono mai sshd-logs (non appare in Parser Metrics).
+
+```bash
+# Su SOC-01
+# Verifica
+tail -5 /var/log/auth.log | grep -E "sshd\[|sshd-session\["
+# "sshd-session[" → fix necessario
+
+# Fix: parser con prefisso 00- (carica prima di sshd-logs.yaml)
+cat > /etc/crowdsec/parsers/s01-parse/00-sshd-session-fix.yaml << 'EOF'
+name: custom/sshd-session-fix
+filter: "evt.Parsed.program == 'sshd-session'"
+onsuccess: continue
+nodes:
+  - filter: "true"
+    statics:
+      - parsed: program
+        value: "sshd"
+EOF
+systemctl restart crowdsec
+```
+
+**Causa C — Debian 13: auth.log non esiste:**
+
+```bash
+# Su SOC-01
+# Verifica se auth.log esiste
+ls -lh /var/log/auth.log 2>/dev/null || echo "ASSENTE — usare journalctl"
+
+# Se assente, usa acquis.d/auth-log.yaml con source journalctl:
+# source: journalctl
+# journalctl_filter:
+#   - "_SYSTEMD_UNIT=ssh.service"
+# labels:
+#   type: syslog
 ```
 
 ### Alert non arrivano su Wazuh — debug layer by layer
@@ -1075,7 +1191,7 @@ Dopo aver completato e verificato questa checklist:
 1. Commit su Git:
    ```bash
    git add runbooks/crowdsec-deploy.md
-   git commit -m "runbooks(crowdsec): v1.1 — fix post-deploy: acquis.yaml, rsyslog RFC3164, decoder OS_Regex, regole Wazuh"
+   git commit -m "runbooks(crowdsec): v1.2 — fix Debian 12: rsyslog RFC3164, acquis.d migration, sshd-session parser"
    ```
 
 2. Aggiornare `docs/01-threat-model.md`:
@@ -1095,5 +1211,5 @@ Dopo aver completato e verificato questa checklist:
 
 ---
 
-*File: `runbooks/crowdsec-deploy.md` · v1.1 · Aprile 2026*  
+*File: `runbooks/crowdsec-deploy.md` · v1.2 · Aprile 2026*  
 *HomeSOC Project — Alessandro · LM Sicurezza Informatica · UniMI*

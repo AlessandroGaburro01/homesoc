@@ -7,6 +7,22 @@ Format: [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/)  
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-04-23
+
+### Fixed
+- `runbooks/crowdsec-deploy.md` v1.2: tre fix Debian 12 verificati in produzione:
+  1. **rsyslog ISO 8601 → RFC 3164** — rsyslog su Debian 12 scrive auth.log con timestamp ISO 8601 (`2026-04-23T...`); il parser `crowdsecurity/syslog-logs` lo scarta silenziosamente. Fix: aggiunto `RSYSLOG_TraditionalFileFormat` sulla riga auth.log in `/etc/rsyslog.conf` (riga 60)
+  2. **acquis.yaml → acquis.d/ migration** — il separatore `---` multi-documento in acquis.yaml causava comportamento non deterministico; migrato a due file separati in `/etc/crowdsec/acquis.d/` (`auth-log.yaml` + `pveproxy.yaml`), acquis.yaml svuotato
+  3. **Parser sshd-session (OpenSSH ≥ 9.x)** — OpenSSH moderno su Debian 12 / Proxmox 8.x usa il processo `sshd-session` per le sessioni; `crowdsecurity/sshd-logs` filtra solo `program == 'sshd'` → tutti gli eventi non raggiungevano lo scenario `ssh-bf`. Fix: parser custom `/etc/crowdsec/parsers/s01-parse/00-sshd-session-fix.yaml` con `onsuccess: continue` che rinomina il campo prima del passaggio a sshd-logs
+
+### Verified
+- Pipeline end-to-end confermata: brute force SSH da vm-103 → CrowdSec ban 4h → syslog → Wazuh rule 100051 level 10 → alert Slack #homesoc-alerts
+- ~22.500 IP bloccati da blocklist CAPI attiva (ssh:bruteforce, http:scan, http:bruteforce, vm-management:exploit)
+
+### Notes
+- Test eseguito con whitelist LAN temporaneamente disabilitata (192.168.0.0/16 commentato in whitelists.yaml); whitelist ripristinata in produzione
+- CrowdSec v1.4.6-10+b4-debian · collection crowdsecurity/sshd v0.2 (up-to-date al 23/04/2026)
+
 ## [0.5.1] — 2026-04-22
 
 ### Fixed
