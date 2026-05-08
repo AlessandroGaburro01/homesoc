@@ -3,7 +3,7 @@
 > A progressively deployed, documentation-first home SOC built on low-power hardware.
 > Dual objective: real network protection + professional portfolio for a Master's in Cybersecurity.
 
-> **Status:** ✅ Phase 0 (Scoping) complete · ✅ Phase 1 (Architecture) complete · ✅ Phase 2 (Deploy) complete · 🔄 Phase 3 (SIEM & Detection) in progress
+> **Status:** ✅ Phase 0 (Scoping) complete · ✅ Phase 1 (Architecture) complete · ✅ Phase 2 (Deploy) complete · ✅ Phase 3a (SIEM & Detection) complete · ✅ Phase 3b (Hardening) complete · 🔄 Phase 3c (Refinement) in progress · 📐 Phase 3d (Deception Layer) scoped
 
 ---
 
@@ -31,12 +31,13 @@ The answer turned into this project: a fully documented, incrementally deployed 
 
 | Layer | Function | Components |
 |---|---|---|
-| L1 Prevention | Block known threats | NextDNS (IoC blocking), VLAN segmentation (future OPNsense) |
+| L1 Prevention | Block known threats | NextDNS (IoC blocking), CrowdSec, VLAN segmentation (future OPNsense) |
 | L2 Visibility | Centralised logging | Wazuh SIEM, Uptime Kuma |
-| L3 Detection | Alert on anomalies | Wazuh custom rules (MITRE ATT&CK mapped), CrowdSec |
-| L4 Response | Case management | TheHive + Cortex, IR playbooks |
-| L5 Intelligence | Threat intel correlation | OpenCTI (STIX/TAXII feeds) |
-| L6 Offensive Lab | Adversary emulation | Caldera, Infection Monkey, Nuclei |
+| L3 Detection | Alert on anomalies | Wazuh custom rules (MITRE ATT&CK mapped), Greenbone CVE scanner |
+| L4 Deception | Adversary trapping | OpenCanary honeypot, Endlessh SSH tarpit, canary tokens (Phase 3d) |
+| L5 Response | Case management | TheHive + Cortex, IR playbooks (Phase 4) |
+| L6 Intelligence | Threat intel correlation | OpenCTI (STIX/TAXII feeds) (Phase 5) |
+| L7 Offensive Lab | Adversary emulation | Caldera, Infection Monkey, Nuclei (Phase 6) |
 
 ---
 
@@ -45,59 +46,103 @@ The answer turned into this project: a fully documented, incrementally deployed 
 ```
 homesoc/
 ├── docs/
-│   ├── 00-charter.md              # Project charter — scope, objectives, roadmap, ADRs
-│   ├── 01-threat-model.md         # STRIDE threat model, asset inventory (47 devices), risk register
-│   ├── 02-architecture.md         # Logical security architecture, VM layout, DFD, detection use cases
-│   └── 03-network-diagram.drawio  # Physical and logical network topology (draw.io)
+│   ├── 00-charter.md                  # Project charter — scope, objectives, roadmap, ADRs
+│   ├── 01-threat-model.md             # STRIDE threat model, asset inventory (47 devices), risk register
+│   ├── 02-architecture.md             # Logical security architecture, VM layout, DFD, detection use cases
+│   ├── 03-network-diagram.drawio      # Physical and logical network topology (draw.io)
+│   ├── phase3b-hardening.md           # Phase 3b scope, task log, lessons learned
+│   ├── phase3d-deception.md           # Phase 3d design — honeypot, tarpit, canary tokens
+│   └── advanced-detection-analysis.md # Structural detection limits and extension roadmap
 ├── configs/
 │   └── attack-navigator/
-│       └── homesoc-layer-v1.json  # MITRE ATT&CK Navigator layer — 22 techniques mapped
+│       └── homesoc-layer-v1.json      # MITRE ATT&CK Navigator layer — 22 techniques mapped
 ├── integrations/
-│   └── slack.py                   # Custom Wazuh → Slack script (messaggi contestuali per UC)
-├── runbooks/                      # Step-by-step deployment guides
-│   ├── proxmox-setup.md           # Proxmox VE — SOC-01 base setup
-│   ├── homeassistant-deploy.md    # Home Assistant OS — vm-100
-│   ├── uptimekuma-deploy.md       # Uptime Kuma + Portainer — ct-101
-│   ├── greenbone-deploy.md        # Greenbone Community Edition — ct-102
-│   ├── wazuh-deploy.md            # Wazuh SIEM + agent + UC custom rules — vm-103
-│   ├── wazuh-slack.md             # Wazuh → Slack integration + script custom
-│   └── crowdsec-deploy.md         # CrowdSec — SOC-01 host (in progress)
-├── detection-rules/               # Custom Wazuh rules mapped to MITRE ATT&CK (Phase 3+)
-├── playbooks/                     # Incident response playbooks (Phase 4+)
-├── lab-reports/                   # Caldera / Infection Monkey exercise reports (Phase 6+)
+│   └── slack_custom.py                # Custom Wazuh → Slack script (contextual messages per UC)
+├── runbooks/                          # Step-by-step deployment guides
+│   ├── proxmox-setup.md               # Proxmox VE — SOC-01 base setup
+│   ├── homeassistant-deploy.md        # Home Assistant OS — vm-100
+│   ├── uptimekuma-deploy.md           # Uptime Kuma + Portainer — ct-101
+│   ├── greenbone-deploy.md            # Greenbone Community Edition — ct-102
+│   ├── wazuh-deploy.md                # Wazuh SIEM + agents + UC custom rules — vm-103
+│   ├── wazuh-slack.md                 # Wazuh → Slack integration + custom script
+│   ├── crowdsec-deploy.md             # CrowdSec — SOC-01 host
+│   ├── backup-offsite.md              # Offsite backup strategy and setup
+│   └── shelly-allarme-negozio.md      # Shelly-based shop alarm integration
+├── detection-rules/                   # Custom Wazuh rules mapped to MITRE ATT&CK (Phase 3+)
+├── playbooks/                         # Incident response playbooks (Phase 4+)
+├── lab-reports/                       # Caldera / Infection Monkey exercise reports (Phase 6+)
 ├── CHANGELOG.md
 └── README.md
 ```
 
-> Documentation is in Italian (university context — Università degli Studi di Milano). README and CHANGELOG are in English for international portfolio visibility.
+> Runbooks and technical documentation are in Italian (university context — Università degli Studi di Milano). README and CHANGELOG are in English for international portfolio visibility.
 
 ---
 
 ## Deployment Roadmap
 
-| Phase | Type | Timeline | Description | Status |
-|---|---|---|---|---|
-| Phase 0 | Design | Week 1-2 | Scoping, threat model, asset inventory, risk register | ✅ Complete |
-| Phase 1 | Architecture | Week 3 | Network diagram, VM layout, detection use cases, ATT&CK layer | ✅ Complete |
-| Phase 2 | Deploy | Month 1 | Proxmox, Home Assistant, Greenbone, Uptime Kuma | ✅ Complete |
-| Phase 3 | Deploy | Month 2-3 | Wazuh SIEM + agent, MITRE ATT&CK rules, FIM, Slack alerts, CrowdSec | 🔄 In progress |
-| Phase 4 | Deploy | Month 4-5 | TheHive + Cortex, IR playbooks | ⬜ |
-| Phase 5 | Intel | Month 6+ | OpenCTI + STIX/TAXII feeds | ⬜ |
-| Phase 6 | Offensive | Month 7+ | Caldera, Infection Monkey, Nuclei | ⬜ |
+| Phase | Type | Description | Status |
+|---|---|---|---|
+| Phase 0 | Design | Scoping, threat model, asset inventory, risk register | ✅ Complete |
+| Phase 1 | Architecture | Network diagram, VM layout, detection use cases, ATT&CK layer | ✅ Complete |
+| Phase 2 | Deploy | Proxmox, Home Assistant, Greenbone, Uptime Kuma | ✅ Complete |
+| Phase 3a | SIEM & Detection | Wazuh SIEM, agents, 6 custom UC rules, Slack alerts | ✅ Complete |
+| Phase 3b | Hardening | CrowdSec, Active Response, Vulnerability Detector, Greenbone pipeline, dashboard | ✅ Complete |
+| Phase 3c | Refinement | OpenSearch indexing fix, FIM Linux, SCA Linux, MITRE tags, Greenbone scan targets | 🔄 In progress |
+| Phase 3d | Deception Layer | OpenCanary honeypot, Endlessh tarpit, canary tokens | 📐 Scoped |
+| Phase 4 | Response | TheHive + Cortex, IR playbooks | ⬜ Planned |
+| Phase 5 | Intel | OpenCTI + STIX/TAXII feeds | ⬜ Planned |
+| Phase 6 | Offensive | Caldera, Infection Monkey, Nuclei | ⬜ Planned |
 
 ### Phase 3 — Detection checklist
 
+#### Phase 3a — SIEM & Detection ✅
+
 | Component | Status |
 |---|---|
-| Wazuh single-node (Manager + Indexer + Dashboard) | ✅ Operativo — vm-103 · 192.168.68.204 |
-| Wazuh Agent — MacBook Pro M1 (END-05) | ✅ Enrollato e attivo |
-| UC-01 SSH brute force (rule 100001, level 10) | ✅ Operativo · alert Slack attivo |
-| UC-02 NextDNS IoT beaconing (rule 100010, level 8) | ✅ Operativo · solo Dashboard |
-| UC-03 FIM macOS (rule 100020/100023, level 12/10) | ✅ Operativo · alert Slack attivo |
-| UC-04 NAS port monitor (rule 100030, level 12) | ✅ Operativo · alert Slack attivo |
-| UC-06 Rogue device (rule 100040, level 10) | ✅ Operativo · alert Slack attivo |
-| Slack integration (wazuh-slack.md) | ✅ Operativo · canale #homesoc-alerts |
-| CrowdSec su SOC-01 | 🔄 In corso |
+| Wazuh single-node (Manager + Indexer + Dashboard) | ✅ Operational — vm-103 · 192.168.68.204 |
+| Wazuh Agent — MacBook Pro M1 (END-05, ID 001) | ✅ Enrolled and active |
+| UC-01 SSH brute force (rule 100001, level 10) | ✅ Operational · Slack alert active |
+| UC-02 NextDNS IoT beaconing (rule 100010, level 8) | ✅ Operational · Dashboard only |
+| UC-03 FIM macOS (rule 100020/100023, level 12/10) | ✅ Operational · Slack alert active |
+| UC-04 NAS port monitor (rule 100030, level 12) | ✅ Operational · Slack alert active |
+| UC-06 Rogue device (rule 100040, level 10) | ✅ Operational · Slack alert active |
+| Slack integration (wazuh-slack.md) | ✅ Operational · `#homesoc-alerts` |
+
+#### Phase 3b — Hardening ✅
+
+| Component | Status |
+|---|---|
+| T-01 Log source health monitoring | ✅ Complete |
+| T-02 Slack notification tuning | ✅ Complete |
+| T-03 Uptime Kuma alerting | ✅ Complete |
+| T-04 Wazuh Active Response — SSH brute force (iptables ban) | ✅ Complete |
+| T-05 Wazuh Vulnerability Detector | ✅ Complete · 25 High + 32 Medium CVEs detected |
+| T-06 Greenbone → Wazuh pipeline | ✅ Complete · CVE-2016-2183 (SWEET32) found on NAS |
+| T-07 HomeSOC Security Dashboard (7 visualisations) | ✅ Complete |
+| CrowdSec on SOC-01 (3 production bugs fixed) | ✅ Complete · ~22,500 IPs blocked |
+| Wazuh Agent — SOC-01 (ID 002) | ✅ Enrolled and active |
+| Wazuh Agent — ct-102 Greenbone (ID 003) | ✅ Enrolled and active |
+
+#### Phase 3c — Refinement 🔄
+
+| Component | Status |
+|---|---|
+| Fix Greenbone alerts not indexing in OpenSearch `wazuh-alerts-*` | 🔄 In progress |
+| Verify Vulnerability Detector alerts end-to-end | ⬜ |
+| Extend Wazuh FIM to Linux hosts | ⬜ |
+| Verify SCA on Linux hosts | ⬜ |
+| Add MITRE ATT&CK tags to all custom rules | ⬜ |
+| Add dedicated weekly Greenbone scan for critical SOC assets | ⬜ |
+
+#### Phase 3d — Deception Layer 📐
+
+| Component | Status |
+|---|---|
+| Canary tokens (Word doc, PDF, fake AWS creds, DNS token, README) | 📐 Scoped |
+| OpenCanary honeypot — new LXC ct-104 (`backup-srv`) | 📐 Scoped |
+| Endlessh SSH tarpit — SOC-01 port 22 (real SSH on 2222) | 📐 Scoped |
+| Wazuh rules 100080–100085 with MITRE ATT&CK mapping | 📐 Scoped |
 
 ---
 
@@ -108,10 +153,12 @@ homesoc/
 | [Project Charter](docs/00-charter.md) | Scope, objectives, roadmap, stack rationale, architectural decision records |
 | [Threat Model](docs/01-threat-model.md) | STRIDE analysis, 47-device asset inventory, 17-risk register, CIA objectives per segment |
 | [Architecture](docs/02-architecture.md) | Defense-in-depth layers, Proxmox VM layout, data flow diagram, 6 detection use cases |
-| [ATT&CK Layer](configs/attack-navigator/homesoc-layer-v1.json) | MITRE ATT&CK Navigator layer — load in [navigator.io](https://mitre-attack.github.io/attack-navigator/) |
-| [Proxmox Setup](runbooks/proxmox-setup.md) | SOC-01 base setup, VM/CT layout, storage, network bridge |
-| [Wazuh Deploy](runbooks/wazuh-deploy.md) | Wazuh single-node, agent macOS, 5 UC custom rules, decoders, FIM |
-| [Wazuh → Slack](runbooks/wazuh-slack.md) | Slack integration, messaggi contestuali per UC, roadmap notifiche future |
+| [ATT&CK Layer](configs/attack-navigator/homesoc-layer-v1.json) | MITRE ATT&CK Navigator layer — load at [mitre-attack.github.io/attack-navigator](https://mitre-attack.github.io/attack-navigator/) |
+| [Wazuh Deploy](runbooks/wazuh-deploy.md) | Wazuh single-node, agents, 6 UC custom rules, decoders, FIM |
+| [Wazuh → Slack](runbooks/wazuh-slack.md) | Slack integration, contextual messages per UC, future notification roadmap |
+| [Phase 3b Hardening](docs/phase3b-hardening.md) | CrowdSec, Active Response, Vulnerability Detector, Greenbone pipeline, dashboard |
+| [Phase 3d Deception](docs/phase3d-deception.md) | Honeypot, SSH tarpit, canary tokens — design and adversarial rationale |
+| [Detection Limits](docs/advanced-detection-analysis.md) | Structural visibility limits, attacker TTPs beyond current detection, extension roadmap |
 
 ---
 
@@ -124,6 +171,29 @@ homesoc/
 | RAM | 32 GB DDR4 |
 | Network | 2× NIC 2.5 GbE |
 | OS | Proxmox VE |
+
+---
+
+## Contributing & Conventions
+
+This is a personal portfolio project — external contributions are not expected.
+Conventions are documented here for consistency and transparency.
+
+### Commit messages
+- Language: **English**
+- Format: [Conventional Commits](https://www.conventionalcommits.org/) — `type(scope): description`
+- Examples:
+  - `feat(wazuh): add SSH brute force detection rule 100001`
+  - `docs(threat-model): update risk register v1.3`
+  - `fix(crowdsec): resolve timestamp format incompatibility`
+
+### Documentation language
+- Runbooks and technical docs: **English**
+- Personal guides (excluded from repo): Italian
+- README and CHANGELOG: **English**
+
+> Commit history prior to May 2026 may contain mixed-language messages
+> — the standard above applies from that point forward.
 
 ---
 
