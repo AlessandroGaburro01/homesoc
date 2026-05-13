@@ -1,7 +1,7 @@
 # Runbook — Wazuh SIEM Deploy (vm-103)
 **Progetto:** HomeSOC · Domestic Security Operations Centre  
 **File:** `runbooks/wazuh-deploy.md`  
-**Versione:** 1.4 — Aprile 2026  
+**Versione:** 1.5 — Maggio 2026  
 **Autore:** Alessandro · LM Sicurezza Informatica · UniMI  
 **Fase:** 3 — SIEM & Detection  
 **Prerequisito:** `runbooks/proxmox-setup.md` completato — SOC-01 operativo, pool `phase2` creato; RAM SOC-01 aggiornata a **32 GB** (vm-103 non entra nel layout a 16 GB)
@@ -9,6 +9,7 @@
 > **Scopo:** Creare e configurare `vm-103` su Proxmox VE come VM Ubuntu 22.04 LTS, installare Wazuh 4.x in configurazione single-node (Manager + Indexer + Dashboard), enrollare il Wazuh Agent sul MacBook Pro M1 (END-05), e deployare le detection rule custom per UC-01, UC-02, UC-03, UC-04 e UC-06 mappate sul threat model del progetto. Al termine di questo runbook Wazuh deve essere operativo, la Dashboard deve mostrare eventi attivi dal MacBook, e tutte le regole custom devono essere caricate e testate.
 
 **Changelog:**
+- v1.5 — Maggio 2026 — UC-06 rogue device: aggiunto vendor-based whitelisting a due livelli (sezione 11.3). MAC non in whitelist ma con vendor trusted (Apple, Google, Samsung, ecc.) classificati come `trusted_vendor` — audit trail nel log senza alert Slack. Risolto problema notifiche ripetute causate da Apple Private MAC Address (randomizzati per SSID). Aggiunto campo `vendor` nel log e nel decoder (sezione 11.4). Dedup riscritta con TTL 7 giorni (timestamp UNIX) invece di reset orario.
 - v1.4 — Aprile 2026 — Fix pipeline UC-02: timestamp nextdns-fetch.sh cambiato da ISO8601 a formato syslog (`%b %e %H:%M:%S`) — il pre-decoder Wazuh non parsava ISO8601 e causava "No decoder matched"; aggiornato test wazuh-logtest in sezione 10.4. Fix rule 100001: `if_matched_sid` cambiato da 5720 a 5710 (sshd-session su Debian 13 logga "Invalid user" → rule 5710, non 5720); rule 100002 riscritta per coprire `if_matched_sid 5720` (password errata su utente valido). Aggiunto Wazuh Agent su SOC-01 (sezione 16 troubleshooting + checklist): agent v4.14.4, auth.log aggiunto al logcollector, SSH su porta 2222.
 - v1.3 — Aprile 2026 — Fix FP UC-04: nas-monitor.sh guard NAS offline (previene FP post-reboot), local_rules.xml v1.3 (regole 100030/100031 riscritte per decoder nas-monitor-fields, aggiunta rule 100032 nas_offline L3, fix frequency/timeframe come attributi su 100001/100002/100011)
 - v1.2 — Aprile 2026 — Fase 3 completa: FIM workaround macOS (script MD5/diff, rule 100023), UC-04 operativo (NAS port monitor, script nas-monitor.sh, regole 100030/100031), fix username alessandrogaburro, decoder fim-macos e nas-monitor, tutti UC operativi
@@ -1297,6 +1298,15 @@ WHITELIST_EOF
 
 ### 11.3 Script di rilevazione
 
+> **v1.2 — Maggio 2026:** aggiunto vendor-based whitelisting a tre livelli per gestire i MAC randomizzati (Apple Private MAC Address). La dedup è riscritta con TTL 7 giorni tramite timestamp UNIX invece di reset orario.
+>
+> **Logica di rilevazione:**
+> - **Tier 1:** MAC esatto presente in whitelist → silenzio totale
+> - **Tier 2:** MAC non in whitelist ma vendor nmap trusted (Apple, Google, ecc.) → log `trusted_vendor` senza alert Slack
+> - **Tier 3:** vendor sconosciuto → log `new_device` → alert UC-06 Slack
+>
+> **Trade-off documentato:** un attaccante che spoofasse un OUI Apple bypasserebbe il Tier 2. Per il threat model domestico (R-11) il rischio è accettabile; la whitelist esatta (Tier 1) rimane il controllo primario per i device fissi.
+
 ```bash
 # Su vm-103
 sudo tee /opt/homesoc/scripts/rogue-device-check.sh << 'SCRIPT_EOF'
@@ -1304,6 +1314,7 @@ sudo tee /opt/homesoc/scripts/rogue-device-check.sh << 'SCRIPT_EOF'
 # ============================================================
 # HomeSOC — Rogue Device Detection (UC-06 / T1200)
 # File: /opt/homesoc/scripts/rogue-device-check.sh
+# v1.2 — Vendor-based whitelisting + dedup TTL 7 giorni
 # Cron: ogni 15 minuti
 # Output: evento Wazuh se device non in whitelist
 # ============================================================
@@ -1312,47 +1323,65 @@ SUBNET="192.168.68.0/24"
 WHITELIST="/var/lib/homesoc/mac_whitelist.txt"
 WAZUH_LOG="/var/log/homesoc/rogue-device.log"
 ALERT_DEDUP="/var/lib/homesoc/rogue_seen.tmp"
+DEDUP_DAYS=7
+
+# Vendor trusted: dispositivi con MAC randomizzato (es. Apple Private MAC)
+# non generano alert — solo audit trail informativo nel log
+TRUSTED_VENDORS="Apple|Samsung|Google|Espressif|TP-Link|Netgear|Shelly"
+
+# Rimuovi entry più vecchie di DEDUP_DAYS giorni
+if [ -f "$ALERT_DEDUP" ]; then
+    CUTOFF=$(date -d "-${DEDUP_DAYS} days" +%s)
+    TMPFILE=$(mktemp)
+    while IFS='|' read -r mac ts; do
+        [ -z "$mac" ] && continue
+        [ "${ts:-0}" -ge "$CUTOFF" ] && echo "${mac}|${ts}"
+    done < "$ALERT_DEDUP" > "$TMPFILE"
+    mv "$TMPFILE" "$ALERT_DEDUP"
+fi
 
 # Leggi whitelist (solo MAC, lowercase, no commenti)
 APPROVED_MACS=$(grep -v "^#" "$WHITELIST" | awk -F'|' '{print tolower($1)}' | grep -v "^$" | grep -v "^xx")
 
-# ARP scan della subnet
+# ARP scan con vendor detection (nmap include il vendor name dopo il MAC)
 # NOTA v1.1: output nmap standard (no -oG) + awk multi-pattern per IP e MAC
-# Il parser -oG con grep/awk/sed non gestisce correttamente tutti i formati MAC
+# NOTA v1.2: parsing esteso per catturare il vendor string dopo il MAC
 SCAN_RESULT=$(sudo nmap -sn -PR "$SUBNET" 2>/dev/null | \
-  awk '/Nmap scan report/{ip=$NF; gsub(/[()]/,"",ip)} /MAC Address/{print ip, tolower($3)}')
+  awk '/Nmap scan report/{ip=$NF; gsub(/[()]/,"",ip)} \
+       /MAC Address/{
+         mac=tolower($3)
+         vendor=$0; sub(/.*MAC Address: [^ ]+ /, "", vendor); gsub(/[()]/, "", vendor)
+         print ip, mac, vendor
+       }')
 
-# Confronta ogni MAC trovato con la whitelist
+# Confronta ogni dispositivo trovato
 while IFS= read -r line; do
-  IP=$(echo "$line" | awk '{print $1}')
-  MAC=$(echo "$line" | awk '{print tolower($2)}')
+    IP=$(echo "$line" | awk '{print $1}')
+    MAC=$(echo "$line" | awk '{print $2}')
+    VENDOR=$(echo "$line" | cut -d' ' -f3-)
 
-  # Salta se MAC non presente (device che non risponde ad ARP)
-  [ -z "$MAC" ] || [ "$MAC" = "" ] && continue
+    [ -z "$MAC" ] && continue
+    [ "$IP" = "192.168.68.1" ] || [ "$IP" = "192.168.68.200" ] && continue
 
-  # Salta IP del gateway e del SOC stesso
-  [ "$IP" = "192.168.68.1" ] || [ "$IP" = "192.168.68.200" ] && continue
-
-  # Controlla se MAC è in whitelist
-  if ! echo "$APPROVED_MACS" | grep -qi "^${MAC}$"; then
-    # Deduplicazione: non alertare più volte per lo stesso MAC nello stesso ciclo
-    DEDUP_KEY="${MAC}"
-    if grep -q "$DEDUP_KEY" "$ALERT_DEDUP" 2>/dev/null; then
-      continue
+    # Tier 1: MAC esatto in whitelist → silenzio totale
+    if echo "$APPROVED_MACS" | grep -qi "^${MAC}$"; then
+        continue
     fi
-    echo "$DEDUP_KEY" >> "$ALERT_DEDUP"
 
-    # Scrivi evento nel log Wazuh
-    echo "$(date -Iseconds) homesoc rogue-device: event=\"new_device\" mac=\"${MAC}\" ip=\"${IP}\" status=\"not_in_whitelist\"" \
-      >> "$WAZUH_LOG"
-  fi
+    # Tier 2: vendor trusted → audit trail senza alert Slack
+    if echo "$VENDOR" | grep -qiE "$TRUSTED_VENDORS"; then
+        echo "$(date -Iseconds) homesoc rogue-device: event=\"trusted_vendor\" mac=\"${MAC}\" ip=\"${IP}\" vendor=\"${VENDOR}\" status=\"mac_random_trusted\"" >> "$WAZUH_LOG"
+        continue
+    fi
+
+    # Tier 3: vendor sconosciuto → alert UC-06
+    if grep -q "^${MAC}|" "$ALERT_DEDUP" 2>/dev/null; then
+        continue
+    fi
+    echo "${MAC}|$(date +%s)" >> "$ALERT_DEDUP"
+    echo "$(date -Iseconds) homesoc rogue-device: event=\"new_device\" mac=\"${MAC}\" ip=\"${IP}\" vendor=\"${VENDOR}\" status=\"not_in_whitelist\"" >> "$WAZUH_LOG"
+
 done <<< "$SCAN_RESULT"
-
-# Pulisci dedup ogni ora (gestito dal cron)
-HOUR=$(date +%M)
-if [ "$HOUR" = "00" ]; then
-  > "$ALERT_DEDUP"
-fi
 SCRIPT_EOF
 
 sudo chmod +x /opt/homesoc/scripts/rogue-device-check.sh
@@ -1362,13 +1391,15 @@ sudo chmod +x /opt/homesoc/scripts/rogue-device-check.sh
 
 > ℹ️ **Fix v1.1:** il decoder usa `<program_name>rogue-device</program_name>` (non `<prematch>`) per coerenza con il comportamento confermato in produzione. La struttura è single-decoder perché il parent/child è necessario solo quando il regex deve operare sul corpo del messaggio DOPO stripping del programname — qui il `<prematch>` implicito del parent basta.
 
+> **v1.2:** aggiunto campo `vendor` nel child decoder per catturare il vendor nmap. Il campo è opzionale nel regex (`[^"]*`) per compatibilità con eventi `trusted_vendor` e `new_device` che ora includono entrambi il vendor.
+
 ```bash
 # Su vm-103
 sudo tee /var/ossec/etc/decoders/homesoc-rogue-decoder.xml << 'DECODER_EOF'
 <!--
   HomeSOC — Decoder rogue device detection
   File: /var/ossec/etc/decoders/homesoc-rogue-decoder.xml
-  v1.1 — Fix: program_name invece di prematch (confermato in prod)
+  v1.2 — Aggiunto campo vendor per vendor-based whitelisting
 -->
 
 <!-- Parent: filtra per program_name=rogue-device -->
@@ -1376,13 +1407,15 @@ sudo tee /var/ossec/etc/decoders/homesoc-rogue-decoder.xml << 'DECODER_EOF'
   <program_name>^rogue-device$</program_name>
 </decoder>
 
-<!-- Child: estrae i campi evento -->
+<!-- Child: estrae i campi evento (vendor opzionale) -->
 <decoder name="homesoc-rogue-device-fields">
   <parent>homesoc-rogue-device</parent>
-  <regex type="pcre2">event="(\S+)" mac="(\S+)" ip="(\S+)" status="(\S+)"</regex>
-  <order>event,mac,ip,status</order>
+  <regex type="pcre2">event="(\S+)" mac="(\S+)" ip="(\S+)" (?:vendor="([^"]*)" )?status="(\S+)"</regex>
+  <order>event,mac,ip,vendor,status</order>
 </decoder>
 DECODER_EOF
+
+sudo systemctl reload wazuh-manager
 ```
 
 ### 11.5 Configurazione cron e logcollector
@@ -1937,5 +1970,5 @@ Dopo aver completato e verificato questa checklist:
    - Preparazione per future esposizioni internet
 ---
 
-*File: `runbooks/wazuh-deploy.md` · v1.4 · Aprile 2026*  
+*File: `runbooks/wazuh-deploy.md` · v1.5 · Maggio 2026*  
 *HomeSOC Project — Alessandro · LM Sicurezza Informatica · UniMI*
