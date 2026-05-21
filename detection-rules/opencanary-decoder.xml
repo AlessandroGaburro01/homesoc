@@ -1,0 +1,23 @@
+<!-- ============================================================ -->
+<!-- HomeSOC — Fase 3d — Deception Layer Decoders                 -->
+<!-- File: detection-rules/opencanary-decoder.xml                 -->
+<!-- ============================================================ -->
+
+<!-- Nota: i log OpenCanary sono JSON puro e vengono parsati       -->
+<!-- automaticamente dal decoder json nativo di Wazuh.             -->
+<!-- Le regole usano <decoded_as>json</decoded_as> +               -->
+<!-- <field name="node_id">backup-srv</field> per identificare     -->
+<!-- la sorgente. Non è necessario un decoder custom OpenCanary.  -->
+
+<!-- Decoder Endlessh tarpit -->
+<!-- Matcha log journald tipo:                                      -->
+<!-- ACCEPT host=::ffff:192.168.68.108 port=56638 fd=4 n=1/4096  -->
+<decoder name="endlessh">
+  <prematch>endlessh</prematch>
+</decoder>
+
+<decoder name="endlessh-fields">
+  <parent>endlessh</parent>
+  <regex offset="after_parent">ACCEPT host=(\S+) port=(\d+)</regex>
+  <order>srcip, srcport</order>
+</decoder>

@@ -7,6 +7,43 @@ Format: [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/)  
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-05-21
+
+### Added
+- `docs/phase3d-deception.md` v1.1 — Fase 3d completata: deception layer operativo in produzione
+- `ct-104` LXC Debian 12 (`192.168.68.206`, hostname `backup-srv`) — nuovo asset infrastruttura
+- OpenCanary 0.9.8 su ct-104: honeypot 5 porte (SSH:22, FTP:21, HTTP:8080, Telnet:23, MySQL:3306) con banner Ubuntu 22.04 LTS convincenti
+- Endlessh SSH tarpit su SOC-01:22 (SSH reale confermato su :2222)
+- Wazuh agent ID 004 (`ct-104-opencanary`) su ct-104 — logcollector JSON per `/var/log/opencanary/opencanary.log`
+- 5 Canarytoken deployati: TK-01 Word (NAS), TK-02 Word (MacBook Desktop), TK-03 AWS Keys (`~/.aws/credentials`), TK-04 DNS (embedded in README), TK-05 README (NAS)
+- `detection-rules/deception-rules.xml` — regole Wazuh 100080–100085 con MITRE ATT&CK mapping
+- `detection-rules/opencanary-decoder.xml` — decoder Endlessh (OpenCanary usa decoder json nativo)
+- Slack routing per regole deception in `/var/ossec/integrations/slack.py`: funzioni `_msg_deception_honeypot`, `_msg_deception_ssh`, `_msg_deception_tarpit`
+- Entry `/etc/hosts` su ct-104, vm-103, MacBook: `backup-srv backup-srv.local → 192.168.68.206`
+
+### Changed
+- `docs/phase3d-deception.md` v1.0 → v1.1: runbook aggiornato con deployment effettivo e sezione deviazioni dal piano (§12)
+- ct-104 sshd spostato su porta 2222 per liberare :22 a OpenCanary
+
+### Fixed
+- OpenCanary MySQL banner: aggiunto prefisso `5.5.5-` richiesto da versione 0.9.8 (`ConfigException: Invalid MySQL Banner`)
+- Wazuh decoder OpenCanary: sostituito `<decoded_as>opencanary</decoded_as>` con `<decoded_as>json</decoded_as>` + `<field name="node_id">backup-srv</field>` — il prematch non trovava match nel corpo JSON puro
+- ct-104 DNS resolution: aggiunto `nameserver 8.8.8.8` in `/etc/resolv.conf` (LXC unprivileged non eredita DNS dall'host)
+
+### Verified
+- **T-01:** TK-02 Word aperto su MacBook → alert Slack ricevuto in `#homesoc-alerts` entro 30 secondi ✅
+- **T-02:** OpenCanary SSH su ct-104:22 → log JSON in `/var/log/opencanary/opencanary.log` ✅
+- **T-03:** Endlessh SOC-01:22 → "Connection timed out during banner exchange" da MacBook, log ACCEPT/CLOSE in journald ✅
+- **T-04:** Rule 100081 level 14 in `alerts.json` con `src_host: 192.168.68.204`, `mail: true` ✅
+- **T-04:** Alert Slack `🚨 HONEYPOT SSH — ALTO RISCHIO` ricevuto in `#homesoc-alerts` ✅
+- **T-05:** Banner check — SSH: `OpenSSH_8.9p1 Ubuntu-3ubuntu0.6`, FTP: `ProFTPD 1.3.5e`, HTTP: `Apache/2.4.57 (Ubuntu)` ✅
+
+### Notes
+- Forward syslog UDP ct-104 → vm-103:514 non implementato: `wazuh-remoted` occupa UDP 514 IPv4, `SysLogHandler` remoto non supportato in OpenCanary 0.9.8. Soluzione: Wazuh agent diretto su ct-104
+- TK-02 token PDF sostituito con Word: macOS Preview non attiva il token PDF (non carica risorse remote)
+- Config OpenCanary scritta via Python `json.dump()` — heredoc in terminale interattivo (pct enter) corrompe testo > ~20 righe
+- Wazuh agent ID 004 aggiunto agli agent monitorati (precedenti: 001 MacBook, 002 SOC-01, 003 ct-102-greenbone)
+
 ## [0.8.0] — 2026-05-21
 
 ### Added

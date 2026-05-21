@@ -1,0 +1,76 @@
+<!-- ============================================================ -->
+<!-- HomeSOC — Fase 3d — Deception Layer Rules                    -->
+<!-- Range ID: 100080–100089                                       -->
+<!-- File: detection-rules/deception-rules.xml                    -->
+<!-- ============================================================ -->
+
+<group name="honeypot,deception">
+
+<!-- OpenCanary — qualsiasi interazione con honeypot -->
+<!-- Usa decoder json nativo + campo node_id per identificare la sorgente -->
+<rule id="100080" level="12">
+  <decoded_as>json</decoded_as>
+  <field name="node_id">backup-srv</field>
+  <description>OpenCanary: honeypot interaction detected from $(src_host)</description>
+  <group>honeypot,deception,lateral_movement</group>
+  <mitre>
+    <id>T1046</id>
+    <id>T1135</id>
+  </mitre>
+</rule>
+
+<!-- OpenCanary — SSH specifico (più grave — potenziale credential harvesting) -->
+<rule id="100081" level="14">
+  <if_sid>100080</if_sid>
+  <field name="dst_port">22</field>
+  <description>OpenCanary: SSH connection attempt on honeypot from $(src_host)</description>
+  <group>honeypot,deception,ssh,lateral_movement</group>
+  <mitre>
+    <id>T1110</id>
+    <id>T1021.004</id>
+  </mitre>
+</rule>
+
+<!-- OpenCanary — HTTP admin panel -->
+<rule id="100082" level="12">
+  <if_sid>100080</if_sid>
+  <field name="dst_port">8080</field>
+  <description>OpenCanary: HTTP access on honeypot admin panel from $(src_host)</description>
+  <group>honeypot,deception,http</group>
+  <mitre>
+    <id>T1190</id>
+  </mitre>
+</rule>
+
+<!-- OpenCanary — altri servizi (FTP, Telnet, MySQL) -->
+<rule id="100083" level="12">
+  <if_sid>100080</if_sid>
+  <description>OpenCanary: service probe on honeypot port $(dst_port) from $(src_host)</description>
+  <group>honeypot,deception,service_probe</group>
+  <mitre>
+    <id>T1046</id>
+  </mitre>
+</rule>
+
+<!-- Endlessh — singola connessione SSH tarpit -->
+<rule id="100084" level="10">
+  <decoded_as>endlessh</decoded_as>
+  <description>Endlessh: SSH tarpit connection from $(srcip) on SOC-01:22</description>
+  <group>honeypot,tarpit,ssh</group>
+  <mitre>
+    <id>T1110</id>
+  </mitre>
+</rule>
+
+<!-- Endlessh — connessioni multiple (scan o brute force) -->
+<rule id="100085" level="12" frequency="5" timeframe="60">
+  <if_matched_sid>100084</if_matched_sid>
+  <same_source_ip/>
+  <description>Endlessh: multiple SSH tarpit connections from $(srcip) — possible scan/brute force</description>
+  <group>honeypot,tarpit,ssh,brute_force</group>
+  <mitre>
+    <id>T1110.001</id>
+  </mitre>
+</rule>
+
+</group>
