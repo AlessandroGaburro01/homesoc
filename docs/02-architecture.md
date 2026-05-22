@@ -1,14 +1,15 @@
 # 02 — Architecture Design
 **Progetto:** HomeSOC · Domestic Security Operations Centre
-**Versione:** 1.1 — Aprile 2026
+**Versione:** 1.2 — Maggio 2026
 **Autore:** Alessandro · LM Sicurezza Informatica · UniMI
 **Prerequisito:** Fase 0 completata — docs/00-charter.md, docs/01-threat-model.md
 
-> Committare con: `git commit -m "docs(architecture): update v1.1 — subnet correction, DHCP reservation IPs"`
+> Committare con: `git commit -m "docs(architecture): update v1.2 — phase4 vm-105 provisioned, layout updated"`
 
 **Changelog:**
 - v1.0 — Aprile 2026 — Prima stesura Fase 1
 - v1.1 — Aprile 2026 — Correzione subnet 192.168.68.0/24 (era .71), IP DHCP reservation reali (MacBook .108, NAS .90, SOC-01 .200)
+- v1.2 — Maggio 2026 — Fase 4: vm-105 (vm-ir) deployata IP .205; ID Proxmox 104 occupato da ct-104 (OpenCanary) → vm-ir usa ID 105; tabella porte aggiornata con IP reali; ADR-04-02 deviazione nota (LocalDB via .deb manuale, non script StrangeBee)
 
 ---
 
@@ -214,9 +215,9 @@ Lo stack difensivo segue il modello **defense-in-depth** organizzato in 6 livell
 | Syslog | Device rete | SOC-01:vm-103 | 514/udp | Syslog | Log router/switch |
 | Dashboard | Admin | SOC-01:vm-103 | 443/tcp | HTTPS | Solo LAN |
 | Wazuh API | TheHive/Cortex | SOC-01:vm-103 | 55000/tcp | HTTPS | Integrazione IR |
-| Case creation | vm-103 Wazuh | vm-104 TheHive | 9000/tcp | HTTP | Alert → case |
-| Enrichment | vm-104 Cortex | Internet | 443/tcp | HTTPS | VirusTotal, AbuseIPDB |
-| CTI | vm-105 OpenCTI | Internet | 443/tcp | HTTPS | Feed STIX/TAXII |
+| Case creation | vm-103 Wazuh | vm-105 TheHive | 9000/tcp | HTTP | Alert → case |
+| Enrichment | vm-105 Cortex | Internet | 443/tcp | HTTPS | VirusTotal, AbuseIPDB |
+| CTI | vm-106 OpenCTI | Internet | 443/tcp | HTTPS | Feed STIX/TAXII |
 | Scan | ct-102 Greenbone | LAN hosts | vari | TCP/UDP/ICMP | Scheduled weekly |
 | Probe | ct-101 Uptime Kuma | Asset LAN | 80/443/ICMP | HTTP/PING | Every 60s |
 | DNS | Tutti i client | NextDNS | 443/tcp | DoH | Via Deco DNS config |
@@ -239,17 +240,20 @@ Lo stack difensivo segue il modello **defense-in-depth** organizzato in 6 livell
 
 ### 5.1 Layout completo (32 GB RAM — target)
 
-| ID | Nome | Tipo | vCPU | RAM | Storage | Rete | Servizi | Fase |
-|---|---|---|---|---|---|---|---|---|
-| 100 | vm-homeassistant | VM | 2 | 2 GB | 32 GB | vmbr0 (LAN) | Home Assistant OS | 2 |
-| 101 | ct-monitoring | LXC | 2 | 1 GB | 16 GB | vmbr0 (LAN) | Uptime Kuma, Portainer | 2 |
-| 102 | ct-scanner | LXC | 4 | 4 GB | 32 GB | vmbr0 (LAN) | Greenbone/OpenVAS, Nuclei | 2 |
-| 103 | vm-siem | VM | 4 | 6 GB | 64 GB | vmbr0 (LAN) | Wazuh Manager + Dashboard | 3 |
-| 104 | vm-ir | VM | 2 | 4 GB | 32 GB | vmbr0 (LAN) | TheHive 5 + Cortex 3 | 4 |
-| 105 | vm-cti | VM | 2 | 4 GB | 48 GB | vmbr0 (LAN) | OpenCTI + connettori | 5 |
-| 106 | vm-offlab | VM | 4 | 4 GB | 32 GB | vmbr1 (isolata) | Caldera, Infection Monkey | 6 |
-| — | Proxmox host | — | — | 4 GB | — | — | OS host, mgmt | sempre |
-| — | **TOTALE** | — | **20** | **29 GB** | **256 GB** | — | **3 GB buffer** | — |
+| ID | Nome | Tipo | vCPU | RAM | Storage | Rete | Servizi | Fase | Stato |
+|---|---|---|---|---|---|---|---|---|---|
+| 100 | vm-homeassistant | VM | 2 | 2 GB | 32 GB | vmbr0 (LAN) | Home Assistant OS | 2 | ✅ |
+| 101 | ct-monitoring | LXC | 2 | 1 GB | 16 GB | vmbr0 (LAN) | Uptime Kuma, Portainer | 2 | ✅ |
+| 102 | ct-scanner | LXC | 4 | 4 GB | 32 GB | vmbr0 (LAN) | Greenbone/OpenVAS, Nuclei | 2 | ✅ |
+| 103 | vm-siem | VM | 4 | 6 GB | 64 GB | vmbr0 (LAN) | Wazuh Manager + Dashboard | 3 | ✅ |
+| 104 | ct-opencanary | LXC | 1 | 1 GB | 8 GB | vmbr0 (LAN) | OpenCanary honeypot | 3d | ✅ |
+| 105 | vm-ir | VM | 2 | 4 GB | 32 GB | vmbr0 (LAN) | TheHive 5 + Cortex 3 | 4 | 🔄 T-02 in corso |
+| 106 | vm-cti | VM | 2 | 4 GB | 48 GB | vmbr0 (LAN) | OpenCTI + connettori | 5 | ⬜ |
+| 107 | vm-offlab | VM | 4 | 4 GB | 32 GB | vmbr1 (isolata) | Caldera, Infection Monkey | 6 | ⬜ |
+| — | Proxmox host | — | — | 4 GB | — | — | OS host, mgmt | sempre | ✅ |
+| — | **TOTALE** | — | **21** | **30 GB** | **264 GB** | — | **2 GB buffer** | — | — |
+
+> **Nota Fase 4 — ADR-04-02 deviazione:** vm-105 usa Proxmox ID 105 (non 104) perché ct-104 è occupato da OpenCanary. TheHive 5.7.2 installato via .deb manuale (`thehive.download.strangebee.com`) con LocalDB/BerkeleyDB — lo script automatico StrangeBee installa Cassandra+Elasticsearch (stack troppo pesante per 4 GB RAM); la configurazione manuale con LocalDB è fedele all'ADR originale.
 
 ### 5.2 Layout fase iniziale (16 GB RAM — pre-upgrade)
 

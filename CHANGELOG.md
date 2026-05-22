@@ -7,6 +7,22 @@ Format: [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/)  
 
 ## [Unreleased]
 
+## [0.9.1] — 2026-05-22
+
+### Added
+- `docs/phase4-incident-response.md` v1.0 — design document completo Fase 4: TheHive 5 + Cortex 3, script Wazuh integration, 4 playbook IR, 5 ADR
+- `vm-105` (vm-ir, `192.168.68.205`) — VM Ubuntu 22.04 su Proxmox ID 105 (ID 104 occupato da ct-104 OpenCanary)
+- TheHive 5.7.2 installato via `.deb` manuale (`thehive.download.strangebee.com`) con LocalDB/BerkeleyDB
+- Wazuh agent ID 005 (`vmir`) su vm-105 — Active
+
+### Changed
+- `docs/02-architecture.md` v1.1 → v1.2: tabella VM layout aggiornata con ID reali (ct-104 OpenCanary, vm-105 vm-ir), riferimenti vm-104 → vm-105, colonna Stato aggiunta
+- `Inventario_IP_Pulito.csv`: aggiunte righe infrastruttura SOC (.200–.206)
+
+### Notes
+- ADR-04-02 deviazione: script automatico StrangeBee installa Cassandra+Elasticsearch (OOM con 4 GB RAM); soluzione: `.deb` manuale + LocalDB. Funzionalità identiche, consumo RAM ~1.3 GB vs ~4-6 GB
+- T-01 ✅ completo — T-02 in corso (TheHive up, Cortex pending)
+
 ## [0.9.0] — 2026-05-21
 
 ### Added
