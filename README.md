@@ -104,7 +104,7 @@ homesoc/
 | T-01 | vm-105 provisioning (Ubuntu 22.04, Wazuh agent ID 005) | ✅ Complete |
 | T-02 | TheHive 5.7.2 + Cortex 3.1.8 installed, connected | ✅ Complete |
 | T-03 | Wazuh → TheHive integration script, ossec.conf, verified | ✅ Complete |
-| T-04 | Cortex analyzers — VirusTotal, AbuseIPDB, Shodan | 🔄 In progress |
+| T-04 | Cortex analyzers — VirusTotal, AbuseIPDB, Shodan | ✅ Complete |
 | T-05 | IR playbooks — PB-01/02/03/04 | ⬜ Pending |
 
 ### Phase 3 — Detection checklist

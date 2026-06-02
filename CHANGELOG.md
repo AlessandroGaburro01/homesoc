@@ -7,6 +7,35 @@ Format: [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/)  
 
 ## [Unreleased]
 
+## [0.9.3] — 2026-06-02
+
+### Added
+- Cortex-Analyzers repo cloned to `/opt/cortex/analyzers/` (274 analyzers available) from `github.com/TheHive-Project/Cortex-Analyzers`
+- Three analyzers enabled for org HomeSOC via Cortex UI:
+  - `AbuseIPDB_2_0` — IP reputation score, abuse reports count, usage category
+  - `VirusTotal_GetReport_3_1` — detection ratio for IP/hash/domain/url across 90+ AV engines
+  - `Shodan_Host_1_0` — exposed ports and service banners for IP addresses
+
+### Changed
+- `/etc/cortex/application.conf`: added `job { runner = [process] }` at root level — Docker not installed on vm-105; process runner required for local Python execution
+- `/etc/cortex/application.conf`: added `/opt/cortex/analyzers/analyzers` to `analyzer.urls`
+- `thehive-cortex@homesoc.local` role in Cortex updated to `read, analyze, orgAdmin` — required to enable analyzers for org
+- `/etc/thehive/application.conf`: Cortex API key updated with renewed token
+- `docs/phase4-incident-response.md` v1.1 → v1.2: T-04 checklist → ✅
+
+### Verified
+- `GET /api/analyzer?range=all` → `count: 3` (AbuseIPDB_2_0, VirusTotal_GetReport_3_1, Shodan_Host_1_0) ✅
+- Manual run on observable `192.168.68.108` (case #4, SSH brute force from MacBook END-05):
+  - `AbuseIPDB: Score=0, Reports=0, Usage=Reserved` ✅
+  - `VirusTotal: 0/94 detections` ✅
+  - `Shodan: No information available (private IP range)` ✅
+- TheHive → Cortex analyzer pipeline end-to-end confirmed ✅
+
+### Notes
+- Cortex-Analyzers installed from GitHub — `deb.strangebee.com` has no DNS A record (same issue as TheHive/Cortex packages, documented in [0.9.1]/[0.9.2])
+- API keys for VirusTotal, AbuseIPDB, Shodan stored in Cortex DB only — never committed to repository
+- T-04 ✅ complete · T-05 pending (IR playbooks — PB-01/02/03/04)
+
 ## [0.9.2] — 2026-06-02
 
 ### Added
