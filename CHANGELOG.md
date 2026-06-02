@@ -7,6 +7,35 @@ Format: [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/)  
 
 ## [Unreleased]
 
+## [0.9.2] — 2026-06-02
+
+### Added
+- `integrations/custom-thehive` — Wazuh → TheHive 5 integration script deployato su vm-103 at `/var/ossec/integrations/custom-thehive` (`root:wazuh` 750); traduce alert JSON in case TheHive v1 API con severità mappata (L10-11→Medium, L12-13→High, L14-15→Critical), TLP, tag MITRE ATT&CK, observable IP/hash/domain
+- Cortex 3.1.8 installato su vm-105 via direct `.deb` da GitHub releases (`github.com/TheHive-Project/Cortex`)
+- Elasticsearch 7.17.29 installato su vm-105 come backend Cortex; heap limitato a 1 GB via `/etc/elasticsearch/jvm.options.d/heap.options`
+- Organizzazione **HomeSOC** creata in TheHive; utenti `homesoc-ops@homesoc.local` (Analyst) e `wazuh-integration@homesoc.local` (Analyst + API key)
+- Organizzazione **HomeSOC** creata in Cortex; utente `thehive-cortex@homesoc.local` (Analyze + API key)
+- Blocco `cortex.servers` aggiunto a `/etc/thehive/application.conf` — TheHive → Cortex connessione confermata "Connected"
+- Blocco `<integration>` `custom-thehive` aggiunto a `/var/ossec/etc/ossec.conf` su vm-103 — level threshold: 10, hook_url: `http://192.168.68.205:9000`
+
+### Changed
+- vm-105 RAM: 4 GB → 6 GB (necessario per Elasticsearch; budget host: 24/32 GB utilizzati)
+- `docs/phase4-incident-response.md` v1.0 → v1.1: changelog aggiornato; checklist T-01/T-02/T-03 → ✅
+
+### Fixed
+- MITRE ATT&CK parsing in `custom-thehive`: questa versione di Wazuh passa i technique ID come stringhe plain (`"T1110.001"`), non come oggetti dict (`{"id": "T1110.001"}`). Fix: `isinstance()` check in list comprehension — supporta entrambi i formati
+- Wazuh integration filename: script rinominato senza estensione `.py` → `custom-thehive` (Wazuh integratord richiede nome esatto senza estensione)
+
+### Verified
+- `wazuh-integratord`: `Enabling integration for: 'custom-thehive'` — nessun errore in `ossec.log`
+- Test manuale script: `sudo /var/ossec/integrations/custom-thehive /tmp/test-alert.json <api_key> http://192.168.68.205:9000` → `Case created: ~40980688` ✅
+- Alert reali SSH brute force da END-05 (192.168.68.108) → case #4–#7 creati automaticamente in TheHive con tag `T1110.001`, `rule:100001`, `agent:soc-01`, observable IP ✅
+- TheHive UI → Connectors → Cortex → **"La configurazione di Cortex è stata testata con successo"** ✅
+
+### Notes
+- `deb.strangebee.com` non ha record DNS A — repo StrangeBee Debian non funzionante. Soluzione documentata: direct `.deb` da `github.com/TheHive-Project/Cortex/releases` (stesso approccio già usato per TheHive in [0.9.1])
+- T-02 ✅ completo · T-03 ✅ completo · T-04 pending (Cortex analyzers) · T-05 pending (playbook IR)
+
 ## [0.9.1] — 2026-05-22
 
 ### Added
@@ -93,39 +122,11 @@ Format: [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/)  
 - **Rule 100062 limitazione Wazuh 4.8+:** il vulnerability scanner non genera alert in `alerts.json` — scrive direttamente in `wazuh-states-vulnerabilities-*`. Notifiche Slack per nuovi CVE richiedono OpenSearch alerting (deferred Fase 4+).
 - **Filebeat log path:** `/var/log/filebeat/filebeat` (non `/var/ossec/logs/filebeat.log`). Fondamentale per diagnostica indicizzazione OpenSearch.
 - **Campo `data.port` riservato:** nel mapping standard Wazuh/OpenSearch `data.port` è mappato come oggetto. Decoder custom devono usare nomi diversi per campi porta (es. `vuln_port`, `nas_port`).
-- **SCA baseline SOC-01 42%:** punto di partenza per hardening CIS — non un problema operativo, ma baseline misurabile per Fase 4+.
 
-## [0.7.0] — 2026-04-24
+## [0.7.0] — 2026-04-23
 
 ### Added
-- `docs/phase3b-hardening.md` v1.2 — Fase 3b completata: tutti e 7 i task eseguiti e verificati in produzione
-- `runbooks/greenbone-to-wazuh.py` — Script stdlib-only Python per pipeline Greenbone → Wazuh; eseguito via `docker exec -i` nel container gvmd (socket GVM su tmpfs interno non accessibile dall'host); zero dipendenze esterne
-- `/var/ossec/etc/decoders/greenbone-decoder.xml` (vm-103) — Decoder JSON per finding Greenbone
-- Rule 100062 in `local_rules.xml` (vm-103) — CVE High/Critical da Vulnerability Detector → Slack
-- Rule 100070/100071 in `local_rules.xml` (vm-103) — Finding Greenbone High/Critical → Slack (rinominate da 100050/100051 per conflitto con crowdsec-rules.xml)
-- Dashboard `HomeSOC Security Operations` su Wazuh Dashboard (7 visualizzazioni: UC Events, Alert Level, Top IPs, FIM, Vulnerability, Active Response, Log Health)
-- Wazuh Agent `ct-102-greenbone` (ID 003) enrollato e Active
-
-### Changed
-- `docs/phase3b-hardening.md` v1.1 → v1.2: T-05/T-06/T-07 marcati completati, checklist aggiornata, sezione 12 "Elementi deferred Fase 3c" aggiunta
-
-### Fixed
-- **Conflitto Rule ID 100050/100051:** le rule Greenbone originalmente pianificate con questi ID confliggevano con `crowdsec-rules.xml` (che usa 100050/100051 per ban CrowdSec). Rinominate in 100070/100071. Il warning `Rule ID '100050' is duplicated` in wazuh-logtest era il segnale diagnostico.
-- **Rule 100071 syntax error:** il regex `^(9|10)\.` per identificare CVSS ≥ 9.0 causa `ERROR: (5107): Syntax error on tag 'cvss'` — l'engine OS_Regex di Wazuh non supporta la stessa sintassi di PCRE. Workaround: rule 100071 usa `<field name="severity">Critical</field>` invece del regex CVSS.
-- **`<vulnerability-detector>` deprecato:** blocco aggiunto manualmente in ossec.conf per T-05, ma Wazuh 4.8+ lo ignora con WARNING e usa valori default. Blocco rimosso, modulo già attivo di default.
-
-### Verified
-- **T-05:** Wazuh Vulnerability Detector attivo — 25 High + 32 Medium CVE su soc-01 (Debian 13) e MacBook (macOS). Top finding: amd64-microcode, urllib3, pip, setuptools, vim.
-- **T-06:** Pipeline end-to-end Greenbone → docker exec → `/var/log/greenbone-findings.log` → Wazuh logcollector (ct-102 agent) → decoder JSON → rule 100070 level 12 → alert Wazuh → notifica Slack `#homesoc-alerts`. Finding reale: **CVE-2016-2183** (SWEET32) su NAS WD My Cloud Home `192.168.68.90:4430/tcp` — cipher suite 3DES, CVSS 7.5 High.
-- **T-07:** Dashboard `HomeSOC Security Operations` operativa con dati reali su 6/7 visualizzazioni.
-
-### Notes
-- **Cron pipeline Greenbone:** `0 8 * * 1` su ct-102 — esecuzione lunedì 08:00, il giorno dopo la scan Greenbone domenicale 02:00
-- **Issue OpenSearch deferred (Fase 3c):** Alert rule 100070 presenti in `alerts.json` e notificati su Slack, ma non indicizzati in `wazuh-alerts-*`. VIZ-05 dashboard vuota. Causa probabile: latenza indexer-connector per agent appena enrollato.
-- **Scope copertura Greenbone:** baseline mensile /24 copre tutti gli asset inclusi vm-103/SOC-01/ct-102. Target settimanale per asset critici SOC pianificato per Fase 3c.
-- **Finding reale actionable:** CVE-2016-2183 (SWEET32) su NAS porta 4430 — da valutare disabilitazione cipher 3DES nel firmware WD My Cloud Home o accettazione rischio residuo.
-
-## [0.6.0] — 2026-04-23
+- `runbooks/crowdsec-deploy.md` v1.2 — CrowdSec deployment completato su SOC-01 con 3 fix production documentati
 
 ### Fixed
 - `runbooks/crowdsec-deploy.md` v1.2: tre fix Debian 12 verificati in produzione:
@@ -156,7 +157,7 @@ Format: [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/)  
 
 ### Added
 - `wazuh-slack.md` — Runbook v1.0: integrazione Wazuh → Slack, script custom per messaggi contestuali per UC-01/03/04/06 (level ≥ 10), roadmap notifiche future (agent disconnect, Uptime Kuma, Greenbone, CrowdSec)
-- `integrations/slack.py` — Script Python custom che sostituisce lo script built-in Wazuh: routing per rule ID, messaggi strutturati con emoji/campi/MITRE tag per ogni use case, fallback generico per rule non mappate
+- `integrations/slack_custom.py` — Script Python custom che sostituisce lo script built-in Wazuh: routing per rule ID, messaggi strutturati con emoji/campi/MITRE tag per ogni use case, fallback generico per rule non mappate
 
 ### Changed
 - `docs/01-threat-model.md` — Updated to v1.3: risk register aggiornato con stato deploy Fase 3 — R-01 Parziale Mitigato (UC-02 operativo), R-02 Parziale Mitigato (UC-03 FIM + Slack), R-08 Parziale Mitigato (FIM operativo), R-10 Parziale Mitigato (UC-01 SSH brute force + Slack), R-14 nota aggiornata (Wazuh manager operativo, POS enrollment pianificato)

@@ -1,0 +1,155 @@
+#!/usr/bin/env python3
+"""
+Wazuh -> TheHive 5 integration script
+HomeSOC Project - Fase 4
+"""
+
+import sys
+import json
+import datetime
+import urllib.request
+import urllib.error
+
+def _severity(level: int) -> int:
+    if level >= 14:
+        return 4
+    if level >= 12:
+        return 3
+    if level >= 10:
+        return 2
+    return 1
+
+def _tlp(level: int) -> int:
+    if level >= 14:
+        return 3
+    if level >= 12:
+        return 2
+    return 1
+
+def _post(url: str, data: dict, api_key: str) -> dict:
+    body = json.dumps(data).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        body_err = e.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"HTTP {e.code} -> {body_err}") from e
+
+def create_case(alert: dict, api_key: str, thehive_url: str) -> str:
+    rule_id   = alert.get("rule", {}).get("id", "?")
+    rule_desc = alert.get("rule", {}).get("description", "Unknown alert")
+    level     = int(alert.get("rule", {}).get("level", 10))
+    agent     = alert.get("agent", {}).get("name", "unknown-agent")
+    timestamp = alert.get("timestamp", datetime.datetime.utcnow().isoformat())
+
+    mitre_raw = alert.get("rule", {}).get("mitre", {}).get("technique", [])
+    mitre_ids = []
+    for t in mitre_raw:
+        if isinstance(t, dict):
+            mid = t.get("id", "")
+            if mid:
+                mitre_ids.append(mid)
+        elif isinstance(t, str) and t:
+            mitre_ids.append(t)
+
+    tags = ["wazuh", f"rule:{rule_id}", f"agent:{agent}"] + mitre_ids
+
+    groups = alert.get("rule", {}).get("groups", [])
+    src_ip  = alert.get("data", {}).get("srcip", "") or \
+              alert.get("decoder", {}).get("parent", "")
+
+    desc_lines = [
+        f"**Alert Wazuh** - rule `{rule_id}` livello `{level}`",
+        f"**Agent:** `{agent}`",
+        f"**Timestamp:** `{timestamp}`",
+    ]
+    if src_ip:
+        desc_lines.append(f"**Source IP:** `{src_ip}`")
+    if groups:
+        desc_lines.append(f"**Groups:** `{', '.join(groups)}`")
+    if mitre_ids:
+        desc_lines.append(f"**MITRE ATT&CK:** `{', '.join(mitre_ids)}`")
+    desc_lines.append(f"\n```json\n{json.dumps(alert, indent=2)}\n```")
+
+    case_payload = {
+        "title": f"HomeSOC - {rule_desc} [rule {rule_id}]",
+        "description": "\n".join(desc_lines),
+        "severity": _severity(level),
+        "tlp": _tlp(level),
+        "tags": tags,
+        "flag": False,
+    }
+
+    result = _post(f"{thehive_url}/api/v1/case", case_payload, api_key)
+    return result.get("_id", "")
+
+def add_observable(case_id, obs_type, obs_value, message, api_key, thehive_url):
+    if not obs_value or not obs_value.strip():
+        return
+    payload = {
+        "dataType": obs_type,
+        "data": obs_value.strip(),
+        "message": message,
+        "tlp": 2,
+        "ioc": False,
+        "tags": ["wazuh-auto"],
+    }
+    _post(f"{thehive_url}/api/v1/case/{case_id}/observable", payload, api_key)
+
+def main():
+    if len(sys.argv) < 4:
+        sys.exit(0)
+
+    alert_file  = sys.argv[1]
+    api_key     = sys.argv[2]
+    thehive_url = sys.argv[3].rstrip("/")
+
+    try:
+        with open(alert_file, encoding="utf-8") as fh:
+            alert = json.load(fh)
+    except Exception:
+        sys.exit(0)
+
+    try:
+        case_id = create_case(alert, api_key, thehive_url)
+    except Exception as exc:
+        print(f"[custom-thehive] ERROR creating case: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    if not case_id:
+        sys.exit(0)
+
+    src_ip    = alert.get("data", {}).get("srcip", "")
+    src_host  = alert.get("data", {}).get("src_host", "")
+    file_hash = (
+        alert.get("syscheck", {}).get("md5_after", "") or
+        alert.get("data", {}).get("sha256", "")
+    )
+    domain = alert.get("data", {}).get("hostname", "")
+
+    if src_ip:
+        add_observable(case_id, "ip", src_ip,
+                       "Source IP from Wazuh alert", api_key, thehive_url)
+    elif src_host:
+        add_observable(case_id, "ip", src_host,
+                       "Source host from Wazuh alert", api_key, thehive_url)
+    if file_hash:
+        add_observable(case_id, "hash", file_hash,
+                       "File hash from FIM alert", api_key, thehive_url)
+    if domain and "." in domain:
+        add_observable(case_id, "domain", domain,
+                       "Domain from DNS alert", api_key, thehive_url)
+
+    print(f"[custom-thehive] Case created: {case_id}", file=sys.stderr)
+
+if __name__ == "__main__":
+    main()

@@ -3,7 +3,7 @@
 > A progressively deployed, documentation-first home SOC built on low-power hardware.
 > Dual objective: real network protection + professional portfolio for a Master's in Cybersecurity.
 
-> **Status:** ✅ Phase 0 (Scoping) complete · ✅ Phase 1 (Architecture) complete · ✅ Phase 2 (Deploy) complete · ✅ Phase 3a (SIEM & Detection) complete · ✅ Phase 3b (Hardening) complete · 🔄 Phase 3c (Refinement) in progress · 📐 Phase 3d (Deception Layer) scoped
+> **Status:** ✅ Phase 0 · ✅ Phase 1 · ✅ Phase 2 · ✅ Phase 3a · ✅ Phase 3b · ✅ Phase 3c · ✅ Phase 3d · 🔄 Phase 4 (Incident Response) in progress
 
 ---
 
@@ -34,8 +34,8 @@ The answer turned into this project: a fully documented, incrementally deployed 
 | L1 Prevention | Block known threats | NextDNS (IoC blocking), CrowdSec, VLAN segmentation (future OPNsense) |
 | L2 Visibility | Centralised logging | Wazuh SIEM, Uptime Kuma |
 | L3 Detection | Alert on anomalies | Wazuh custom rules (MITRE ATT&CK mapped), Greenbone CVE scanner |
-| L4 Deception | Adversary trapping | OpenCanary honeypot, Endlessh SSH tarpit, canary tokens (Phase 3d) |
-| L5 Response | Case management | TheHive + Cortex, IR playbooks (Phase 4) |
+| L4 Deception | Adversary trapping | OpenCanary honeypot, Endlessh SSH tarpit, canary tokens |
+| L5 Response | Case management | TheHive 5 + Cortex 3, IR playbooks (Phase 4) |
 | L6 Intelligence | Threat intel correlation | OpenCTI (STIX/TAXII feeds) (Phase 5) |
 | L7 Offensive Lab | Adversary emulation | Caldera, Infection Monkey, Nuclei (Phase 6) |
 
@@ -51,13 +51,16 @@ homesoc/
 │   ├── 02-architecture.md             # Logical security architecture, VM layout, DFD, detection use cases
 │   ├── 03-network-diagram.drawio      # Physical and logical network topology (draw.io)
 │   ├── phase3b-hardening.md           # Phase 3b scope, task log, lessons learned
-│   ├── phase3d-deception.md           # Phase 3d design — honeypot, tarpit, canary tokens
+│   ├── phase3c-consolidation.md       # Phase 3c runbook — OpenSearch fix, FIM Linux, SCA, MITRE tags
+│   ├── phase3d-deception.md           # Phase 3d runbook — honeypot, tarpit, canary tokens
+│   ├── phase4-incident-response.md    # Phase 4 runbook — TheHive 5, Cortex 3, IR playbooks
 │   └── advanced-detection-analysis.md # Structural detection limits and extension roadmap
 ├── configs/
 │   └── attack-navigator/
 │       └── homesoc-layer-v1.json      # MITRE ATT&CK Navigator layer — 22 techniques mapped
 ├── integrations/
-│   └── slack_custom.py                # Custom Wazuh → Slack script (contextual messages per UC)
+│   ├── slack_custom.py                # Custom Wazuh → Slack script (contextual messages per UC)
+│   └── custom-thehive                 # Custom Wazuh → TheHive 5 script (case + observable creation)
 ├── runbooks/                          # Step-by-step deployment guides
 │   ├── proxmox-setup.md               # Proxmox VE — SOC-01 base setup
 │   ├── homeassistant-deploy.md        # Home Assistant OS — vm-100
@@ -88,11 +91,21 @@ homesoc/
 | Phase 2 | Deploy | Proxmox, Home Assistant, Greenbone, Uptime Kuma | ✅ Complete |
 | Phase 3a | SIEM & Detection | Wazuh SIEM, agents, 6 custom UC rules, Slack alerts | ✅ Complete |
 | Phase 3b | Hardening | CrowdSec, Active Response, Vulnerability Detector, Greenbone pipeline, dashboard | ✅ Complete |
-| Phase 3c | Refinement | OpenSearch indexing fix, FIM Linux, SCA Linux, MITRE tags, Greenbone scan targets | 🔄 In progress |
-| Phase 3d | Deception Layer | OpenCanary honeypot, Endlessh tarpit, canary tokens | 📐 Scoped |
-| Phase 4 | Response | TheHive + Cortex, IR playbooks | ⬜ Planned |
+| Phase 3c | Refinement | OpenSearch indexing fix, FIM Linux, SCA Linux, MITRE tags, Greenbone scan targets | ✅ Complete |
+| Phase 3d | Deception Layer | OpenCanary honeypot, Endlessh tarpit, canary tokens | ✅ Complete |
+| Phase 4 | Response | TheHive 5 + Cortex 3, Wazuh integration, IR playbooks | 🔄 In progress |
 | Phase 5 | Intel | OpenCTI + STIX/TAXII feeds | ⬜ Planned |
 | Phase 6 | Offensive | Caldera, Infection Monkey, Nuclei | ⬜ Planned |
+
+### Phase 4 — Incident Response checklist
+
+| Task | Component | Status |
+|---|---|---|
+| T-01 | vm-105 provisioning (Ubuntu 22.04, Wazuh agent ID 005) | ✅ Complete |
+| T-02 | TheHive 5.7.2 + Cortex 3.1.8 installed, connected | ✅ Complete |
+| T-03 | Wazuh → TheHive integration script, ossec.conf, verified | ✅ Complete |
+| T-04 | Cortex analyzers — VirusTotal, AbuseIPDB, Shodan | 🔄 In progress |
+| T-05 | IR playbooks — PB-01/02/03/04 | ⬜ Pending |
 
 ### Phase 3 — Detection checklist
 
@@ -124,25 +137,25 @@ homesoc/
 | Wazuh Agent — SOC-01 (ID 002) | ✅ Enrolled and active |
 | Wazuh Agent — ct-102 Greenbone (ID 003) | ✅ Enrolled and active |
 
-#### Phase 3c — Refinement 🔄
+#### Phase 3c — Refinement ✅
 
 | Component | Status |
 |---|---|
-| Fix Greenbone alerts not indexing in OpenSearch `wazuh-alerts-*` | 🔄 In progress |
-| Verify Vulnerability Detector alerts end-to-end | ⬜ |
-| Extend Wazuh FIM to Linux hosts | ⬜ |
-| Verify SCA on Linux hosts | ⬜ |
-| Add MITRE ATT&CK tags to all custom rules | ⬜ |
-| Add dedicated weekly Greenbone scan for critical SOC assets | ⬜ |
+| Fix Greenbone alerts indexing in OpenSearch `wazuh-alerts-*` | ✅ Complete |
+| Verify Vulnerability Detector alerts end-to-end | ✅ Complete · 366 CVE indexed |
+| Extend Wazuh FIM to Linux hosts (vm-103, SOC-01) | ✅ Complete |
+| Verify SCA on Linux hosts | ✅ Complete · CIS baseline documented |
+| Add MITRE ATT&CK tags to all custom rules | ✅ Complete · 18/18 rules tagged |
+| Add dedicated weekly Greenbone scan for critical SOC assets | ✅ Complete |
 
-#### Phase 3d — Deception Layer 📐
+#### Phase 3d — Deception Layer ✅
 
 | Component | Status |
 |---|---|
-| Canary tokens (Word doc, PDF, fake AWS creds, DNS token, README) | 📐 Scoped |
-| OpenCanary honeypot — new LXC ct-104 (`backup-srv`) | 📐 Scoped |
-| Endlessh SSH tarpit — SOC-01 port 22 (real SSH on 2222) | 📐 Scoped |
-| Wazuh rules 100080–100085 with MITRE ATT&CK mapping | 📐 Scoped |
+| Canary tokens (Word doc x2, fake AWS creds, DNS token, README) | ✅ Operational · 5 tokens deployed |
+| OpenCanary honeypot — ct-104 (`backup-srv`, 192.168.68.206) | ✅ Operational · SSH/FTP/HTTP/Telnet/MySQL |
+| Endlessh SSH tarpit — SOC-01:22 (real SSH on :2222) | ✅ Operational |
+| Wazuh rules 100080–100085 with MITRE ATT&CK mapping | ✅ Operational · Slack alerts active |
 
 ---
 
@@ -158,6 +171,7 @@ homesoc/
 | [Wazuh → Slack](runbooks/wazuh-slack.md) | Slack integration, contextual messages per UC, future notification roadmap |
 | [Phase 3b Hardening](docs/phase3b-hardening.md) | CrowdSec, Active Response, Vulnerability Detector, Greenbone pipeline, dashboard |
 | [Phase 3d Deception](docs/phase3d-deception.md) | Honeypot, SSH tarpit, canary tokens — design and adversarial rationale |
+| [Phase 4 IR](docs/phase4-incident-response.md) | TheHive 5 + Cortex 3, Wazuh integration, 4 IR playbooks |
 | [Detection Limits](docs/advanced-detection-analysis.md) | Structural visibility limits, attacker TTPs beyond current detection, extension roadmap |
 
 ---
