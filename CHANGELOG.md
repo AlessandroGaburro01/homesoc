@@ -7,6 +7,21 @@ Format: [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/)  
 
 ## [Unreleased]
 
+## [0.9.4] — 2026-06-03
+
+### Added
+- `playbooks/PB-01-ssh-brute-force.md` v1.0 — IR playbook for SSH brute force (rule 100001, T1110.001); PICERL structure with CrowdSec verification, manual iptables fallback, TheHive case closure template
+- `playbooks/PB-02-rogue-device.md` v1.0 — IR playbook for unauthorized LAN device (rule 100040/41, T1078); MAC vendor lookup, Deco app isolation, whitelist procedure
+- `playbooks/PB-03-greenbone-critical.md` v1.0 — IR playbook for Greenbone Critical/High CVE (rule 100070, T1190); triage matrix by CVSS/exposure, patch procedure, Greenbone re-scan verification
+- `playbooks/PB-04-honeypot-interaction.md` v1.0 — IR playbook for OpenCanary/Endlessh interaction (rules 100080–85, T1046/T1021.004); four scenario matrix (internal/Tailscale/external/MacBook FP), IOC handling via CrowdSec
+
+### Notes
+- All four playbooks follow PICERL structure: Preparation → Identification → Containment → Eradication → Recovery → Lessons Learned
+- Each includes: quick reference SLA table, decision matrix, exact CLI commands with SSH paths, TheHive case closure template, known limitations documented inline
+- Known limitation documented in PB-02/PB-04: without OPNsense VLAN segmentation (Phase 6), true network isolation is limited to Deco app block or SSID rotation (R-05, R-07)
+- MacBook OpenWebUI FP pattern documented in PB-04 (TK-03 canarytoken stop/start verification procedure)
+- T-05 ✅ complete · Phase 4 IR Layer ✅ complete
+
 ## [0.9.3] — 2026-06-02
 
 ### Added

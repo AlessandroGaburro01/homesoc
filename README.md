@@ -3,7 +3,7 @@
 > A progressively deployed, documentation-first home SOC built on low-power hardware.
 > Dual objective: real network protection + professional portfolio for a Master's in Cybersecurity.
 
-> **Status:** ✅ Phase 0 · ✅ Phase 1 · ✅ Phase 2 · ✅ Phase 3a · ✅ Phase 3b · ✅ Phase 3c · ✅ Phase 3d · 🔄 Phase 4 (Incident Response) in progress
+> **Status:** ✅ Phase 0 · ✅ Phase 1 · ✅ Phase 2 · ✅ Phase 3a · ✅ Phase 3b · ✅ Phase 3c · ✅ Phase 3d · ✅ Phase 4 (Incident Response) · ⬜ Phase 5 (Intel) planned
 
 ---
 
@@ -93,7 +93,7 @@ homesoc/
 | Phase 3b | Hardening | CrowdSec, Active Response, Vulnerability Detector, Greenbone pipeline, dashboard | ✅ Complete |
 | Phase 3c | Refinement | OpenSearch indexing fix, FIM Linux, SCA Linux, MITRE tags, Greenbone scan targets | ✅ Complete |
 | Phase 3d | Deception Layer | OpenCanary honeypot, Endlessh tarpit, canary tokens | ✅ Complete |
-| Phase 4 | Response | TheHive 5 + Cortex 3, Wazuh integration, IR playbooks | 🔄 In progress |
+| Phase 4 | Response | TheHive 5 + Cortex 3, Wazuh integration, IR playbooks | ✅ Complete |
 | Phase 5 | Intel | OpenCTI + STIX/TAXII feeds | ⬜ Planned |
 | Phase 6 | Offensive | Caldera, Infection Monkey, Nuclei | ⬜ Planned |
 
@@ -105,7 +105,7 @@ homesoc/
 | T-02 | TheHive 5.7.2 + Cortex 3.1.8 installed, connected | ✅ Complete |
 | T-03 | Wazuh → TheHive integration script, ossec.conf, verified | ✅ Complete |
 | T-04 | Cortex analyzers — VirusTotal, AbuseIPDB, Shodan | ✅ Complete |
-| T-05 | IR playbooks — PB-01/02/03/04 | ⬜ Pending |
+| T-05 | IR playbooks — PB-01/02/03/04 | ✅ Complete |
 
 ### Phase 3 — Detection checklist
 
