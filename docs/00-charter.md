@@ -1,6 +1,6 @@
 # 00 — Project Charter
 **Progetto:** HomeSOC · Domestic Security Operations Centre
-**Versione:** 1.1 — Aprile 2026
+**Versione:** 1.2 — Luglio 2026
 **Autore:** Alessandro · LM Sicurezza Informatica · UniMI
 **Hardware:** GMKtec M5 Ultra · Ryzen 7 7730U · 16→32 GB DDR4
 **OS base:** Proxmox VE (fallback: Debian 12 + Docker)
@@ -10,6 +10,7 @@
 **Changelog:**
 - v1.0 — Aprile 2026 — Prima stesura
 - v1.1 — Aprile 2026 — Allineamento RAM con architettura, threat model rimandato a 01-threat-model.md, correzione modelli Deco
+- v1.2 — Luglio 2026 — Roadmap resequenced (ADR-07): Fase 5 ora Caldera (adversary emulation), Fase 6 ora OpenCTI — quest'ultima esplicitamente gated su upgrade RAM 64GB; rationale completo in docs/phase5-planning.md (ADR-05-01)
 
 ---
 
@@ -96,6 +97,8 @@ Lo stack è organizzato in livelli difensivi corrispondenti alle fasi della kill
 | **L5** | Intelligence | OpenCTI (feed STIX/TAXII: OTX, Abuse.ch, MITRE), correlazione IoC con Wazuh alerts |
 | **L6** | Offensive Lab | Caldera (adversary emulation MITRE ATT&CK), Infection Monkey (breach simulation) |
 
+> ℹ️ La numerazione L1-L6 riflette la stratificazione concettuale defense-in-depth, non l'ordine di deployment. L'ordine di deployment reale è nella Roadmap (§5) ed è stato rivisto — vedi ADR-07 e `docs/phase5-planning.md`.
+
 ### 4.2 Proxmox VM/CT Layout
 
 | VM / CT | Tipo | vCPU | RAM | Servizi ospitati |
@@ -111,12 +114,16 @@ Lo stack è organizzato in livelli difensivi corrispondenti alle fasi della kill
 | **TOTALE (32 GB)** | — | **20** | **29 GB** | **3 GB buffer** |
 
 > ⚠️ Con 16 GB (fase iniziale): avviare solo vm-100, ct-101, ct-102. RAM totale ~9 GB — Proxmox host ne richiede ~2, 7 GB liberi. Con 32 GB (upgrade): sbloccare vm-103 (Wazuh) e procedere con le fasi successive.
+>
+> ℹ️ Questa tabella riflette la pianificazione originale di Fase 1. Gli ID Proxmox effettivamente assegnati in deployment differiscono in alcuni casi (es. TheHive/Cortex hanno preso ID 105, non 104, per conflitto con ct-104/OpenCanary — vedi `phase4-incident-response.md`). Allineamento completo di questa tabella con lo stato reale è un debito di documentazione noto, non ancora chiuso.
 
 ---
 
 ## 5. Roadmap di Deployment
 
 La roadmap segue il principio **incrementale e verificabile**: ogni fase ha prerequisiti espliciti, output documentati e criteri di completamento prima di procedere alla successiva.
+
+> ℹ️ **Fase 5 e Fase 6 sono state invertite rispetto alla stesura originale** (v1.0/v1.1: Fase 5 = OpenCTI, Fase 6 = Caldera). Motivazione completa in `docs/phase5-planning.md` (ADR-05-01): OpenCTI è gated su un upgrade RAM non ancora eseguito, mentre Caldera non ha dipendenze hardware bloccanti e genera un dataset labeled utile per validare l'analyzer LLM di triage pianificato (`LocalLLM_Triage_1_0`) prima ancora di scriverlo.
 
 | # | Tipo | Durata | Attività | Output | Prerequisito |
 |---|---|---|---|---|---|
@@ -125,8 +132,8 @@ La roadmap segue il principio **incrementale e verificabile**: ogni fase ha prer
 | **FASE 2** | DEPLOY | Mese 1 | Proxmox VE setup, Home Assistant, Greenbone/OpenVAS, Uptime Kuma, hardening SSH | runbooks/proxmox-setup.md, runbooks/homeassistant-deploy.md | Fase 1 completa, hardware disponibile |
 | **FASE 3** | DEPLOY | Mese 2-3 | Wazuh SIEM (manager + agent MacBook), prime detection rules MITRE ATT&CK, FIM | runbooks/wazuh-deploy.md, detection-rules/wazuh-custom/ | Fase 2 OK, 32 GB RAM |
 | **FASE 4** | DEPLOY | Mese 4-5 | TheHive + Cortex, integrazione API (VirusTotal, AbuseIPDB, Shodan), playbook IR | runbooks/thehive-deploy.md, playbooks/*.md | Fase 3 OK, Wazuh alert attivi |
-| **FASE 5** | INTEL | Mese 6+ | OpenCTI + feed STIX/TAXII (OTX, Abuse.ch, MITRE ATT&CK), correlazione IoC | runbooks/opencti-deploy.md, configs/opencti/feeds.json | Fase 4 OK |
-| **FASE 6** | OFFLAB | Mese 7+ | Caldera, Infection Monkey, Nuclei per web app scan | runbooks/caldera-deploy.md, lab-reports/ | Fase 5 OK, VLAN lab isolata |
+| **FASE 5** | OFFLAB | Mese 6+ | Caldera (adversary emulation), Infection Monkey (breach simulation), Nuclei per web app scan — genera dataset labeled per `LocalLLM_Triage_1_0` | runbooks/caldera-deploy.md, lab-reports/ | Fase 4 OK |
+| **FASE 6** | INTEL | Mese 7+ | OpenCTI + feed STIX/TAXII (OTX, Abuse.ch, MITRE ATT&CK), correlazione IoC con Wazuh | runbooks/opencti-deploy.md, configs/opencti/feeds.json | Fase 5 OK **+ upgrade RAM 64GB (hard gate)** |
 | **FUTURO** | ARCH+ | Casa nuova | OPNsense firewall, nuova topologia con Fritzbox bridge, VLAN reali | docs/04-future-arch.md | Casa nuova pronta |
 
 ---
@@ -142,10 +149,10 @@ La roadmap segue il principio **incrementale e verificabile**: ogni fase ha prer
 | **Wazuh** | SIEM | Mese 2-3 | SIEM, FIM, log centralizzati, correlazione | Open source, MITRE ATT&CK integration, agent macOS |
 | **CrowdSec** | IPS | Mese 2-3 | Blocco IP malevoli se servizi esposti | Community threat intel, Firewall Bouncer |
 | **TheHive + Cortex** | IR | Mese 4-5 | Case management IR + analisi automatizzata | Standard blue team, integrazione Wazuh, API gratuite |
-| **OpenCTI** | CTI | Mese 6+ | Threat intelligence, correlazione IoC | Feed STIX/TAXII gratuiti, integrazione MITRE ATT&CK |
-| **Caldera** | OFFENSE | Mese 7+ | Adversary emulation MITRE ATT&CK | MITRE project ufficiale, test realistico detection rules |
-| **Infection Monkey** | OFFENSE | Mese 7+ | Breach & attack simulation automatizzata | Zero-config per ambienti LAN, complementare a Caldera |
-| **Nuclei** | SCAN | Mese 7+ | Web vulnerability scanner (template-based) | Veloce, community templates, audit web app |
+| **Caldera** | OFFENSE | Mese 6+ | Adversary emulation MITRE ATT&CK | MITRE project ufficiale, test realistico detection rules |
+| **Infection Monkey** | OFFENSE | Mese 6+ | Breach & attack simulation automatizzata | Zero-config per ambienti LAN, complementare a Caldera |
+| **Nuclei** | SCAN | Mese 6+ | Web vulnerability scanner (template-based) | Veloce, community templates, audit web app |
+| **OpenCTI** | CTI | Mese 7+ | Threat intelligence, correlazione IoC | Feed STIX/TAXII gratuiti, integrazione MITRE ATT&CK |
 
 ---
 
@@ -215,8 +222,9 @@ Registro delle decisioni significative con motivazione — utile per portfolio.
 | ADR-04 | NextDNS vs AdGuard Home locale | NextDNS già configurato, DoH, non dipende dall'uptime del server | AdGuard: più controllo ma aggiunge dipendenza dal server HomeSOC |
 | ADR-05 | OPNsense rimandato | Richiede Fritzbox in bridge e nuova topologia — ok con casa nuova | Attivazione ora: troppo impatto su rete attiva del negozio |
 | ADR-06 | TheHive 5 vs DFIR-IRIS | TheHive: community più ampia, integrazione Cortex matura, documentazione estesa | DFIR-IRIS: più leggero, UI moderna, ma community più piccola e meno integrazioni pronte |
+| ADR-07 | Re-sequencing Fase 5/6 (Caldera prima di OpenCTI) | Hard gate RAM su OpenCTI (8-12GB richiesti, 32GB host già ~22GB allocati) + necessità di un dataset labeled per validare `LocalLLM_Triage_1_0` prima di scriverlo | Ordine originale (OpenCTI prima): scartato — bloccato comunque da hardware, quindi non eseguibile a breve termine indipendentemente da altre considerazioni. Dettaglio completo in `docs/phase5-planning.md` |
 
 ---
 
-*File: `docs/00-charter.md` · v1.1 · Aprile 2026*
+*File: `docs/00-charter.md` · v1.2 · Luglio 2026*
 *HomeSOC Project — Alessandro · LM Sicurezza Informatica · UniMI*
