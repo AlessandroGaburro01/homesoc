@@ -3,7 +3,7 @@
 > A progressively deployed, documentation-first home SOC built on low-power hardware.
 > Dual objective: real network protection + professional portfolio for a Master's in Cybersecurity.
 
-> **Status:** ✅ Phase 0 · ✅ Phase 1 · ✅ Phase 2 · ✅ Phase 3a · ✅ Phase 3b · ✅ Phase 3c · ✅ Phase 3d · ✅ Phase 4 (Incident Response) · ⬜ Phase 5 (Intel) planned
+> **Status:** ✅ Phase 0 · ✅ Phase 1 · ✅ Phase 2 · ✅ Phase 3a · ✅ Phase 3b · ✅ Phase 3c · ✅ Phase 3d · ✅ Phase 4 (Incident Response) · ⬜ Phase 5 (Offensive — Caldera) planned
 
 ---
 
@@ -36,8 +36,8 @@ The answer turned into this project: a fully documented, incrementally deployed 
 | L3 Detection | Alert on anomalies | Wazuh custom rules (MITRE ATT&CK mapped), Greenbone CVE scanner |
 | L4 Deception | Adversary trapping | OpenCanary honeypot, Endlessh SSH tarpit, canary tokens |
 | L5 Response | Case management | TheHive 5 + Cortex 3, IR playbooks (Phase 4) |
-| L6 Intelligence | Threat intel correlation | OpenCTI (STIX/TAXII feeds) (Phase 5) |
-| L7 Offensive Lab | Adversary emulation | Caldera, Infection Monkey, Nuclei (Phase 6) |
+| L6 Intelligence | Threat intel correlation | OpenCTI (STIX/TAXII feeds) (Phase 6) |
+| L7 Offensive Lab | Adversary emulation | Caldera, Infection Monkey, Nuclei (Phase 5) |
 
 ---
 
@@ -94,8 +94,8 @@ homesoc/
 | Phase 3c | Refinement | OpenSearch indexing fix, FIM Linux, SCA Linux, MITRE tags, Greenbone scan targets | ✅ Complete |
 | Phase 3d | Deception Layer | OpenCanary honeypot, Endlessh tarpit, canary tokens | ✅ Complete |
 | Phase 4 | Response | TheHive 5 + Cortex 3, Wazuh integration, IR playbooks | ✅ Complete |
-| Phase 5 | Intel | OpenCTI + STIX/TAXII feeds | ⬜ Planned |
-| Phase 6 | Offensive | Caldera, Infection Monkey, Nuclei | ⬜ Planned |
+| Phase 5 | Offensive | Caldera, Infection Monkey, Nuclei | ⬜ Planned |
+| Phase 6 | Intel | OpenCTI + STIX/TAXII feeds | ⬜ Planned (gated on 64GB RAM upgrade) |
 
 ### Phase 4 — Incident Response checklist
 
